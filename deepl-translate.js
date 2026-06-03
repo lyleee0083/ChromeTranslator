@@ -1,6 +1,6 @@
 import { getDeepLTranslateEndpoint } from './deepl-settings.js';
 
-export const DEEPL_TARGET_LANGUAGE_MAP = {
+const DEEPL_TARGET_LANGUAGE_MAP = {
   'zh-CN': 'ZH',
   en: 'EN-US',
   ja: 'JA',
@@ -13,7 +13,7 @@ export const DEEPL_TARGET_LANGUAGE_MAP = {
   ru: 'RU'
 };
 
-export function getDeepLTargetLanguageCode(targetLanguage) {
+function getDeepLTargetLanguageCode(targetLanguage) {
   return DEEPL_TARGET_LANGUAGE_MAP[targetLanguage] || '';
 }
 
@@ -21,7 +21,7 @@ export function isDeepLTargetLanguageSupported(targetLanguage) {
   return Boolean(getDeepLTargetLanguageCode(targetLanguage));
 }
 
-export function buildDeepLTranslateRequest(sourceTexts, targetLanguage, apiKey, options = {}) {
+function buildDeepLTranslateRequest(sourceTexts, targetLanguage, apiKey, options = {}) {
   const text = Array.isArray(sourceTexts) ? sourceTexts : [sourceTexts];
   const targetLang = getDeepLTargetLanguageCode(targetLanguage);
   if (!targetLang) {
@@ -49,7 +49,7 @@ export function buildDeepLTranslateRequest(sourceTexts, targetLanguage, apiKey, 
   };
 }
 
-export function parseDeepLTranslateResponse(data, expectedLength) {
+function parseDeepLTranslateResponse(data, expectedLength) {
   const translations = data?.translations;
   if (!Array.isArray(translations) || translations.length !== expectedLength) {
     throw new Error('DeepL response length did not match the request.');
@@ -58,11 +58,27 @@ export function parseDeepLTranslateResponse(data, expectedLength) {
   return translations.map((translation) => String(translation?.text || '').trim());
 }
 
+export class DeepLTranslateError extends Error {
+  constructor(message, status = 0) {
+    super(message);
+    this.name = 'DeepLTranslateError';
+    this.status = status;
+  }
+}
+
+export function isDeepLQuotaOrAuthError(error) {
+  const status = Number(error?.status || 0);
+  return status === 401 || status === 403 || status === 456 || status === 429;
+}
+
 export async function fetchDeepLTranslatedTexts(fetchImpl, sourceTexts, targetLanguage, apiKey, requestOptions = {}) {
   const request = buildDeepLTranslateRequest(sourceTexts, targetLanguage, apiKey, requestOptions);
   const response = await fetchImpl(request.url, request.init);
   if (!response.ok) {
-    throw new Error(`DeepL translate endpoint responded with HTTP ${response.status}`);
+    throw new DeepLTranslateError(
+      `DeepL translate endpoint responded with HTTP ${response.status}`,
+      response.status
+    );
   }
 
   const data = await response.json();

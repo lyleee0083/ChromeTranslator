@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Chrome Translator",
   "description": "Translate full-page text and YouTube subtitles.",
-  "version": "0.1.7",
+  "version": "0.1.22",
   "permissions": ["contextMenus", "storage", "tabs"],
   "host_permissions": [
     "https://clients5.google.com/*",

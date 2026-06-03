@@ -146,12 +146,39 @@
     <main>
       <h1>Chrome Translator 设置</h1>
       <section>
-        <h2>DeepL 润色密钥</h2>
+        <h2>DeepL 润色（默认关闭）</h2>
         <label for="deeplApiKey">DeepL API Key</label>
-        <input id="deeplApiKey" type="password" placeholder="用于本地持久化缓存核对润色" autocomplete="off" spellcheck="false">
+        <input id="deeplApiKey" type="password" placeholder="保存后激活润色，不影响 Google 翻译" autocomplete="off" spellcheck="false">
+        <div class="limit-grid">
+          <div>
+            <label for="deeplQuotaMode">润色额度</label>
+            <select id="deeplQuotaMode">
+              <option value="custom">自定义</option>
+              <option value="infinite">∞</option>
+            </select>
+          </div>
+          <div>
+            <label for="deeplQuotaLimitK">额度（k）</label>
+            <input id="deeplQuotaLimitK" type="number" min="1" step="1" value="500">
+          </div>
+        </div>
+        <div class="limit-grid">
+          <div>
+            <label for="deeplDurationMode">密钥有效期</label>
+            <select id="deeplDurationMode">
+              <option value="custom">自定义</option>
+              <option value="infinite">∞</option>
+            </select>
+          </div>
+          <div>
+            <label for="deeplDurationLimitDays">天数</label>
+            <input id="deeplDurationLimitDays" type="number" min="1" step="1" value="30">
+          </div>
+        </div>
         <p id="deeplKeyStatus" class="status-line" aria-live="polite"></p>
-        <p class="hint">在线翻译使用 Google 接口。DeepL 仅读取本地持久化缓存条目进行核对润色后写回，不参与首次网络翻译。</p>
-        <button id="saveDeepLApiKey" type="button">保存密钥</button>
+        <p class="hint">在线翻译始终使用 Google。DeepL 默认关闭；保存密钥后才会对本地持久缓存条目后台润色。额度用尽或到期将自动关闭，失败结果不会写入缓存。</p>
+        <button id="saveDeepLApiKey" type="button">保存密钥并启用润色</button>
+        <button id="clearDeepLApiKey" type="button">清除密钥并关闭润色</button>
       </section>
       <section>
         <label for="excludedTranslationHostsSearch">搜索域名</label>
@@ -174,11 +201,26 @@
       <section>
         <label>缓存统计</label>
         <div id="cacheStats" class="status-line"></div>
+        <div class="limit-grid">
+          <div>
+            <label for="cacheLimitMode">每语言缓存上限</label>
+            <select id="cacheLimitMode">
+              <option value="custom">自定义</option>
+              <option value="infinite">不限制</option>
+            </select>
+          </div>
+          <div>
+            <label for="cacheLimitMaxEntries">条数</label>
+            <input id="cacheLimitMaxEntries" type="number" min="100" step="100" value="5000">
+          </div>
+        </div>
+        <p id="cacheLimitStatus" class="status-line" aria-live="polite"></p>
+        <button id="saveCacheLimitSettings" type="button">保存缓存上限</button>
         <label class="checkbox-row">
           <input id="autoCacheCleanupEnabled" type="checkbox">
           <span>自动清理本地持久化缓存</span>
         </label>
-        <p class="hint">关闭时不会自动按时间、容量或命中次数裁剪持久缓存，手动清理仍可使用。</p>
+        <p class="hint">默认每语言 5000 条；选「不限制」时不按条数裁剪。开启自动清理时仍可按 30 天未使用、超长低命中等规则清理。</p>
         <button id="refreshCacheStats" type="button">刷新缓存统计</button>
         <button id="clearAllCache" type="button">清空全部缓存</button>
         <label for="clearLanguageCacheInput">清空指定语言缓存</label>

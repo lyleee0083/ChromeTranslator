@@ -7,6 +7,10 @@ import { RUNTIME_DIRECTORIES, RUNTIME_FILES } from './extension-runtime-files.mj
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
 
+execFileSync(process.execPath, ['scripts/verify-extension-modules.mjs'], {
+  cwd: projectRoot,
+  stdio: 'inherit'
+});
 execFileSync(process.execPath, ['scripts/bundle-content-script.mjs'], {
   cwd: projectRoot,
   stdio: 'inherit'

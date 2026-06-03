@@ -1,8 +1,6 @@
 const CHINESE_TARGET_ENGLISH_RESIDUE =
   /\b(?:Meet|Try|Use|series|with|and|the|in|or|of|for|is a|is an|a|an|to|at|by|on|as)\b/i;
 
-const MARKETING_VERB_BRAND_PATTERN = /^(Meet|Try|Use)\s+([A-Za-z][\w-]*)/i;
-
 export function isStaleProtectedTermsCacheEntry(value, currentVersion) {
   if (typeof value === 'string') {
     return true;
@@ -32,10 +30,6 @@ export function hasChineseTargetEnglishResidue(text, targetLanguage) {
   return CHINESE_TARGET_ENGLISH_RESIDUE.test(normalized);
 }
 
-export function hasChineseTargetEnglishFunctionWordResidue(text, targetLanguage) {
-  return hasChineseTargetEnglishResidue(text, targetLanguage);
-}
-
 export function isClearlyEnglishSourceText(text) {
   const normalized = String(text || '').trim();
   if (!normalized) {
@@ -49,21 +43,4 @@ export function isClearlyEnglishSourceText(text) {
   }
 
   return true;
-}
-
-export function getMarketingVerbBrandMatch(text) {
-  const normalized = String(text || '').trim();
-  const match = normalized.match(MARKETING_VERB_BRAND_PATTERN);
-  if (!match) {
-    return null;
-  }
-
-  return {
-    verb: match[1],
-    brand: match[2]
-  };
-}
-
-export function isMarketingVerbBrandSnippet(text) {
-  return Boolean(getMarketingVerbBrandMatch(text));
 }

@@ -18,11 +18,11 @@ const EXTENSION_UI_SELECTORS = [
   '#chrome-translator-youtube-subtitle'
 ];
 
-export function isBlockedElement(element) {
+function isBlockedElement(element) {
   return Boolean(element?.tagName && BLOCKED_TAGS.has(element.tagName));
 }
 
-export function isExtensionOwnedElement(element) {
+function isExtensionOwnedElement(element) {
   return Boolean(element?.closest && EXTENSION_UI_SELECTORS.some((selector) => element.closest(selector)));
 }
 

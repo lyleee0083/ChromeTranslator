@@ -1,8 +1,7 @@
 export const YOUTUBE_SUBTITLE_TRANSLATION_STORAGE_KEY = 'youtubeSubtitleTranslationEnabled';
 export const DEFAULT_YOUTUBE_SUBTITLE_TRANSLATION_ENABLED = true;
 export const YOUTUBE_PLAYBACK_JUMP_THRESHOLD_SECONDS = 3;
-export const YOUTUBE_URGENT_PREFETCH_SECONDS = 15;
-export const YOUTUBE_NEAR_FUTURE_PREFETCH_SECONDS = 120;
+export const YOUTUBE_ROLLING_PREFETCH_LEAD_SECONDS = 30;
 
 export function isYouTubeWatchPage(urlLike) {
   try {
@@ -151,33 +150,46 @@ export function isYoutubePlaybackJump(previousTime, nextTime, threshold = YOUTUB
   return Math.abs(nextTime - previousTime) > threshold;
 }
 
-export function getYoutubeCueWindowPriority(cue, currentTime) {
-  if (cue.start <= currentTime && cue.start + cue.duration >= currentTime) {
-    return 0;
+export function getYoutubeCueTextsRollingOrder(cues, currentTime, excludeTexts = new Set()) {
+  const normalizedTime = Number(currentTime) || 0;
+  const forward = [];
+  const wrap = [];
+
+  for (const cue of cues) {
+    const text = cue.text;
+    if (!text || excludeTexts.has(text)) {
+      continue;
+    }
+
+    if (cue.start + cue.duration >= normalizedTime) {
+      forward.push(cue);
+    } else {
+      wrap.push(cue);
+    }
   }
 
-  if (cue.start <= currentTime + 30) {
-    return 1;
-  }
+  forward.sort((left, right) => left.start - right.start);
+  wrap.sort((left, right) => left.start - right.start);
 
-  return 2;
+  return [...new Set([...forward, ...wrap].map((cue) => cue.text))];
 }
 
-export function getYoutubeCueTextsInWindow(
+export function getYoutubeUncachedCueTextsAhead(
   cues,
   currentTime,
   windowEndOffsetSeconds,
-  prefetchedTexts = new Set(),
-  maxTexts = 10
+  isCached,
+  maxTexts = 24
 ) {
-  const windowEnd = currentTime + windowEndOffsetSeconds;
+  const windowEnd = Number(currentTime) + windowEndOffsetSeconds;
   const texts = cues
     .filter((cue) => (
+      cue.text &&
       cue.start + cue.duration >= currentTime &&
       cue.start <= windowEnd &&
-      !prefetchedTexts.has(cue.text)
+      !isCached(cue.text)
     ))
-    .sort((left, right) => getYoutubeCueWindowPriority(left, currentTime) - getYoutubeCueWindowPriority(right, currentTime))
+    .sort((left, right) => left.start - right.start)
     .map((cue) => cue.text);
 
   return [...new Set(texts)].slice(0, maxTexts);

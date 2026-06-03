@@ -4,12 +4,6 @@ import {
   DEFAULT_PROPER_NOUNS,
   DEFAULT_TERMS_AND_ACRONYMS
 } from './protected-terms-defaults.js';
-export {
-  DEFAULT_BRANDS_AND_PRODUCTS,
-  DEFAULT_CODE_LINKS_AND_FORMULAS,
-  DEFAULT_PROPER_NOUNS,
-  DEFAULT_TERMS_AND_ACRONYMS
-};
 
 export const USER_PROTECTED_TERMS_STORAGE_KEY = 'userProtectedTerms';
 export const PROTECTED_TERMS_VERSION = 4;
@@ -22,7 +16,7 @@ function normalizeForMatch(term) {
   return normalizeTerm(term).toLowerCase();
 }
 
-export function normalizeProtectedTerm(term) {
+function normalizeProtectedTerm(term) {
   return normalizeForMatch(term);
 }
 
@@ -85,7 +79,7 @@ export function getDefaultProtectedTerms() {
   return [];
 }
 
-export function getMergedProtectedTerms(userProtectedTerms = []) {
+function getMergedProtectedTerms(userProtectedTerms = []) {
   const dictionaries = getProtectedTermDictionaries(userProtectedTerms);
   return dedupeTerms(dictionaries.flatMap((dictionary) => dictionary.terms));
 }
@@ -121,7 +115,7 @@ function isStrongCodeProtectedTerm(term) {
   return normalized.length >= 16;
 }
 
-export function isStrongModeProtectedTerm(term) {
+function isStrongModeProtectedTerm(term) {
   const normalized = normalizeForMatch(term);
   if (!normalized) {
     return false;
@@ -136,10 +130,6 @@ export function isStrongModeProtectedTerm(term) {
   }
 
   return true;
-}
-
-export function isYoutubeSubtitleProtectedTerm(term) {
-  return isStrongModeProtectedTerm(term);
 }
 
 function buildStrongModeProtectedTerms(candidates) {

@@ -16,18 +16,18 @@ import {
   DEFAULT_YOUTUBE_SUBTITLE_TRANSLATION_ENABLED,
   extractCaptionTracks,
   findCueAtTime,
+  getYoutubeCueTextsRollingOrder,
+  getYoutubeUncachedCueTextsAhead,
   getSubtitleOverlayStyle,
-  getYoutubeCueTextsInWindow,
   hasCaptionChanged,
   isYouTubeWatchPage,
   isYoutubePlaybackJump,
   normalizeCaptionText,
   parseYoutubeTranscriptXml,
   prepareYoutubeCaptionTextForTranslation,
-  YOUTUBE_NEAR_FUTURE_PREFETCH_SECONDS,
+  YOUTUBE_ROLLING_PREFETCH_LEAD_SECONDS,
   YOUTUBE_PLAYBACK_JUMP_THRESHOLD_SECONDS,
-  YOUTUBE_SUBTITLE_TRANSLATION_STORAGE_KEY,
-  YOUTUBE_URGENT_PREFETCH_SECONDS
+  YOUTUBE_SUBTITLE_TRANSLATION_STORAGE_KEY
 } from './youtube-subtitles.js';
 
 const TRANSLATE_TEXT_MESSAGE = 'TRANSLATE_TEXT';
@@ -52,6 +52,9 @@ const YOUTUBE_TRANSLATION_PRIORITY = {
   ACTIVE_SUBTITLE: 0,
   NEAR_FUTURE_SUBTITLE: 8
 };
+const YOUTUBE_PREFETCH_BATCH_SIZE = 48;
+const YOUTUBE_PREFETCH_BATCH_PARALLEL = 8;
+const YOUTUBE_CUE_TRANSLATION_CACHE_LIMIT = 2000;
 const WEBPAGE_TRANSLATION_NEAR_VIEWPORT_MARGIN = 800;
 const WEBPAGE_TRANSLATION_BATCH_MAX_ITEMS = 20;
 const WEBPAGE_TRANSLATION_BATCH_MAX_CHARS = 4000;
@@ -72,11 +75,11 @@ let youtubePrefetchActive = false;
 let youtubeWindowPrefetchActive = false;
 let youtubePrefetchedCues = [];
 let youtubeActiveCueText = '';
-let youtubeWindowPrefetchedTexts = new Set();
+let youtubeRollingPrefetchController = null;
 let youtubePlaybackGeneration = 0;
 let youtubeLastSyncedVideoTime = NaN;
 let youtubeVideoElement = null;
-let youtubeActiveTranslationPending = false;
+const youtubeCueTranslationCache = new Map();
 let webpageTranslationEnabled = false;
 let webpageMutationObserver = null;
 let webpageOriginalText = new Map();
@@ -654,7 +657,6 @@ async function translateWebpageTextNodeBatch(tasks, runId) {
       }
     }
   } catch {
-    // Keep the original text on translation failure.
   } finally {
     webpageActiveTranslations -= 1;
     updateWebpageTranslationLifecycleState();
@@ -942,12 +944,12 @@ function resetWebpageTranslationStateForNavigation() {
   webpageRunId += 1;
 }
 
-function cancelBackgroundTranslationTasks(taskType) {
+function cancelBackgroundTranslationTasks(taskType, options = {}) {
   chrome.runtime.sendMessage({
     type: CANCEL_TRANSLATION_TASKS_MESSAGE,
-    taskType
+    taskType,
+    maxPriority: options.maxPriority
   }).catch(() => {
-    // The background service worker may be unavailable during teardown.
   });
 }
 
@@ -1039,7 +1041,9 @@ function stopYoutubeSubtitleTranslation() {
   youtubePrefetchVideoId = '';
   youtubePrefetchedCues = [];
   youtubeActiveCueText = '';
-  youtubeWindowPrefetchedTexts = new Set();
+  youtubeCueTranslationCache.clear();
+  youtubeRollingPrefetchController?.abort();
+  youtubeRollingPrefetchController = null;
   youtubePlaybackGeneration += 1;
   youtubeLastSyncedVideoTime = NaN;
   cancelBackgroundTranslationTasks(TRANSLATION_TASK_TYPE_YOUTUBE);
@@ -1069,28 +1073,114 @@ function handleYoutubeCaptionMutation() {
 
   if (!hasCaptionChanged(lastCaptionText, textForTranslation)) {
     if (!textForTranslation) {
-      removeYoutubeSubtitleOverlay();
-      showOriginalYoutubeCaptions();
+      clearYoutubeSubtitleDisplay();
     }
     return;
   }
 
   if (!textForTranslation) {
-    removeYoutubeSubtitleOverlay();
-    showOriginalYoutubeCaptions();
+    clearYoutubeSubtitleDisplay();
     lastCaptionText = '';
     return;
   }
 
   lastCaptionText = normalizeCaptionText(textForTranslation);
+  presentYoutubeSubtitlePending();
   translateYoutubeCaption(lastCaptionText);
+}
+
+function getYoutubeCueTranslation(sourceText) {
+  return youtubeCueTranslationCache.get(sourceText) || '';
+}
+
+function rememberYoutubeCueTranslation(sourceText, translatedText) {
+  const source = String(sourceText || '').trim();
+  const translated = String(translatedText || '').trim();
+  if (!source || !translated) {
+    return;
+  }
+
+  if (youtubeCueTranslationCache.size >= YOUTUBE_CUE_TRANSLATION_CACHE_LIMIT) {
+    const oldestKey = youtubeCueTranslationCache.keys().next().value;
+    if (oldestKey) {
+      youtubeCueTranslationCache.delete(oldestKey);
+    }
+  }
+
+  youtubeCueTranslationCache.set(source, translated);
+}
+
+function clearYoutubeSubtitleDisplay() {
+  youtubeActiveCueText = '';
+  removeYoutubeSubtitleOverlay();
+  showOriginalYoutubeCaptions();
+}
+
+function tryRenderCachedYoutubeSubtitle(sourceText) {
+  const cachedTranslation = getYoutubeCueTranslation(sourceText);
+  if (!cachedTranslation) {
+    return false;
+  }
+
+  hideOriginalYoutubeCaptions();
+  renderYoutubeSubtitleOverlay(normalizeChineseTranslationFallback(cachedTranslation));
+  return true;
+}
+
+function presentYoutubeSubtitlePending() {
+  hideOriginalYoutubeCaptions();
+  removeYoutubeSubtitleOverlay();
+}
+
+function reconcileYoutubeSubtitleOverlay(expectedCaptionText) {
+  if (!youtubeSubtitleEnabled || !isPageVisible()) {
+    clearYoutubeSubtitleDisplay();
+    return;
+  }
+
+  if (youtubePrefetchedCues.length > 0 && youtubeVideoElement) {
+    const cue = findCueAtTime(youtubePrefetchedCues, youtubeVideoElement.currentTime);
+    if (!cue) {
+      clearYoutubeSubtitleDisplay();
+      return;
+    }
+
+    const activeText = prepareYoutubeCaptionTextForTranslation(cue.text);
+    if (!activeText) {
+      clearYoutubeSubtitleDisplay();
+      return;
+    }
+
+    if (activeText !== expectedCaptionText) {
+      removeYoutubeSubtitleOverlay();
+      showOriginalYoutubeCaptions();
+      return;
+    }
+
+    if (tryRenderCachedYoutubeSubtitle(activeText)) {
+      return;
+    }
+
+    presentYoutubeSubtitlePending();
+    return;
+  }
+
+  if (!expectedCaptionText || expectedCaptionText !== youtubeActiveCueText) {
+    removeYoutubeSubtitleOverlay();
+    showOriginalYoutubeCaptions();
+  }
 }
 
 async function translateYoutubeCaption(captionText, playbackGeneration = youtubePlaybackGeneration) {
   const requestId = latestTranslationRequestId + 1;
   latestTranslationRequestId = requestId;
-  youtubeActiveTranslationPending = true;
-  cancelBackgroundTranslationTasks(TRANSLATION_TASK_TYPE_YOUTUBE);
+  cancelBackgroundTranslationTasks(TRANSLATION_TASK_TYPE_YOUTUBE, {
+    maxPriority: YOUTUBE_TRANSLATION_PRIORITY.ACTIVE_SUBTITLE
+  });
+
+  if (tryRenderCachedYoutubeSubtitle(captionText)) {
+    return;
+  }
 
   try {
     const translation = await chrome.runtime.sendMessage({
@@ -1102,29 +1192,27 @@ async function translateYoutubeCaption(captionText, playbackGeneration = youtube
 
     if (
       requestId !== latestTranslationRequestId ||
-      playbackGeneration !== youtubePlaybackGeneration ||
+      playbackGeneration !== youtubePlaybackGeneration
+    ) {
+      reconcileYoutubeSubtitleOverlay(captionText);
+      return;
+    }
+
+    if (
       !translation?.translatedText ||
       translation.source === 'original' ||
       translation.source === 'protected'
     ) {
-      removeYoutubeSubtitleOverlay();
-      showOriginalYoutubeCaptions();
+      clearYoutubeSubtitleDisplay();
       return;
     }
 
+    rememberYoutubeCueTranslation(captionText, translation.translatedText);
     hideOriginalYoutubeCaptions();
     renderYoutubeSubtitleOverlay(normalizeChineseTranslationFallback(translation.translatedText));
   } catch {
     if (requestId === latestTranslationRequestId && playbackGeneration === youtubePlaybackGeneration) {
-      removeYoutubeSubtitleOverlay();
-      showOriginalYoutubeCaptions();
-    }
-  } finally {
-    if (requestId === latestTranslationRequestId && playbackGeneration === youtubePlaybackGeneration) {
-      youtubeActiveTranslationPending = false;
-      if (youtubeVideoElement) {
-        scheduleYoutubeSubtitleWindowTranslations(youtubeVideoElement.currentTime, youtubePrefetchAbortController?.signal);
-      }
+      clearYoutubeSubtitleDisplay();
     }
   }
 }
@@ -1163,78 +1251,119 @@ async function prefetchYoutubeSubtitleTranslations() {
       .filter((cue) => cue.text);
     youtubePrefetchedCues = cues;
     youtubeActiveCueText = '';
-    youtubeWindowPrefetchedTexts = new Set();
     bindYoutubeVideoTimeSync();
-    handleYoutubePlaybackPositionChanged();
+    const currentTime = youtubeVideoElement?.currentTime || 0;
+    restartYoutubeRollingPrefetch(currentTime);
+    refreshYoutubeSubtitleAtCurrentTime();
   } catch {
-    // Prefetch is best-effort; live translation remains the fallback path.
   } finally {
     youtubePrefetchActive = false;
   }
 }
 
 async function pretranslateYoutubeCaptionTexts(texts, signal) {
-  const batchSize = 20;
+  const batches = [];
+  for (let index = 0; index < texts.length; index += YOUTUBE_PREFETCH_BATCH_SIZE) {
+    batches.push(texts.slice(index, index + YOUTUBE_PREFETCH_BATCH_SIZE));
+  }
+  if (batches.length === 0) {
+    return;
+  }
 
   try {
     youtubeWindowPrefetchActive = true;
-    for (let index = 0; index < texts.length && youtubeSubtitleEnabled && isPageVisible(); index += batchSize) {
-      if (signal.aborted) {
-        return;
-      }
-
-      const batch = texts.slice(index, index + batchSize);
-      await chrome.runtime.sendMessage({
-        type: TRANSLATE_TEXT_BATCH_MESSAGE,
-        taskType: TRANSLATION_TASK_TYPE_YOUTUBE,
-        sourceTexts: batch,
-        priority: YOUTUBE_TRANSLATION_PRIORITY.NEAR_FUTURE_SUBTITLE,
-        cacheOnly: true
-      });
-    }
+    await runYoutubePrefetchBatches(batches, signal);
   } finally {
     youtubeWindowPrefetchActive = false;
   }
 }
 
-function scheduleYoutubeSubtitleWindowTranslations(currentTime, signal) {
-  if (
-    !youtubeSubtitleEnabled ||
-    !isPageVisible() ||
-    !youtubePrefetchedCues.length ||
-    youtubeActiveTranslationPending ||
-    youtubeWindowPrefetchActive ||
-    signal?.aborted
-  ) {
+async function runYoutubePrefetchBatches(batches, signal) {
+  let nextBatchIndex = 0;
+  const workerCount = Math.min(YOUTUBE_PREFETCH_BATCH_PARALLEL, batches.length);
+
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (nextBatchIndex < batches.length) {
+      if (signal.aborted || !youtubeSubtitleEnabled || !isPageVisible()) {
+        return;
+      }
+
+      const batchIndex = nextBatchIndex;
+      nextBatchIndex += 1;
+      const batch = batches[batchIndex];
+      const uncachedTexts = batch.filter((text) => !youtubeCueTranslationCache.has(text));
+      if (uncachedTexts.length === 0) {
+        continue;
+      }
+
+      const translations = await chrome.runtime.sendMessage({
+        type: TRANSLATE_TEXT_BATCH_MESSAGE,
+        taskType: TRANSLATION_TASK_TYPE_YOUTUBE,
+        sourceTexts: uncachedTexts,
+        priority: YOUTUBE_TRANSLATION_PRIORITY.NEAR_FUTURE_SUBTITLE,
+        cacheOnly: false
+      });
+
+      if (!Array.isArray(translations)) {
+        continue;
+      }
+
+      translations.forEach((translation) => {
+        if (
+          translation?.sourceText &&
+          translation?.translatedText &&
+          translation.source !== 'original' &&
+          translation.source !== 'protected'
+        ) {
+          rememberYoutubeCueTranslation(translation.sourceText, translation.translatedText);
+        }
+      });
+    }
+  }));
+}
+
+function restartYoutubeRollingPrefetch(currentTime) {
+  if (!youtubeSubtitleEnabled || !isPageVisible() || !youtubePrefetchedCues.length) {
     return;
   }
 
-  const activeSignal = signal || youtubePrefetchAbortController?.signal || new AbortController().signal;
-  const urgentTexts = getYoutubeCueTextsInWindow(
+  youtubeRollingPrefetchController?.abort();
+  youtubeRollingPrefetchController = new AbortController();
+  const signal = youtubeRollingPrefetchController.signal;
+  const orderedTexts = getYoutubeCueTextsRollingOrder(
     youtubePrefetchedCues,
     currentTime,
-    YOUTUBE_URGENT_PREFETCH_SECONDS,
-    youtubeWindowPrefetchedTexts
+    new Set([...youtubeCueTranslationCache.keys()])
   );
-  urgentTexts.forEach((text) => youtubeWindowPrefetchedTexts.add(text));
-  const nearFutureTexts = getYoutubeCueTextsInWindow(
-    youtubePrefetchedCues,
-    currentTime,
-    YOUTUBE_NEAR_FUTURE_PREFETCH_SECONDS,
-    youtubeWindowPrefetchedTexts
-  );
-  const orderedTexts = [...urgentTexts];
-  for (const text of nearFutureTexts) {
-    if (!orderedTexts.includes(text)) {
-      orderedTexts.push(text);
-    }
-  }
+
   if (orderedTexts.length === 0) {
     return;
   }
 
-  orderedTexts.forEach((text) => youtubeWindowPrefetchedTexts.add(text));
-  pretranslateYoutubeCaptionTexts(orderedTexts, activeSignal);
+  void pretranslateYoutubeCaptionTexts(orderedTexts, signal);
+}
+
+function maybeKickYoutubeRollingPrefetch(currentTime) {
+  if (
+    youtubeWindowPrefetchActive ||
+    !youtubeSubtitleEnabled ||
+    !isPageVisible() ||
+    !youtubePrefetchedCues.length
+  ) {
+    return;
+  }
+
+  const uncachedAhead = getYoutubeUncachedCueTextsAhead(
+    youtubePrefetchedCues,
+    currentTime,
+    YOUTUBE_ROLLING_PREFETCH_LEAD_SECONDS,
+    (text) => youtubeCueTranslationCache.has(text)
+  );
+  if (uncachedAhead.length === 0) {
+    return;
+  }
+
+  restartYoutubeRollingPrefetch(currentTime);
 }
 
 function handleYoutubePlaybackPositionChanged() {
@@ -1245,9 +1374,8 @@ function handleYoutubePlaybackPositionChanged() {
   youtubePlaybackGeneration += 1;
   latestTranslationRequestId += 1;
   cancelBackgroundTranslationTasks(TRANSLATION_TASK_TYPE_YOUTUBE);
-  youtubeWindowPrefetchedTexts = new Set();
   youtubeLastSyncedVideoTime = youtubeVideoElement.currentTime;
-  youtubeActiveTranslationPending = false;
+  restartYoutubeRollingPrefetch(youtubeVideoElement.currentTime);
   refreshYoutubeSubtitleAtCurrentTime();
 }
 
@@ -1264,6 +1392,7 @@ function handleYoutubeVideoTimeUpdate() {
 
   youtubeLastSyncedVideoTime = currentTime;
   refreshYoutubeSubtitleAtCurrentTime();
+  maybeKickYoutubeRollingPrefetch(currentTime);
 }
 
 function handleYoutubeVideoPlayResume() {
@@ -1321,26 +1450,27 @@ function refreshYoutubeSubtitleAtCurrentTime() {
   const currentTime = youtubeVideoElement.currentTime;
   const cue = findCueAtTime(youtubePrefetchedCues, currentTime);
   if (!cue) {
-    youtubeActiveCueText = '';
-    removeYoutubeSubtitleOverlay();
-    showOriginalYoutubeCaptions();
+    clearYoutubeSubtitleDisplay();
     return;
   }
 
   const textForTranslation = prepareYoutubeCaptionTextForTranslation(cue.text);
   if (!textForTranslation) {
-    youtubeActiveCueText = '';
-    removeYoutubeSubtitleOverlay();
-    showOriginalYoutubeCaptions();
+    clearYoutubeSubtitleDisplay();
     return;
   }
 
   if (textForTranslation === youtubeActiveCueText) {
-    scheduleYoutubeSubtitleWindowTranslations(currentTime, youtubePrefetchAbortController?.signal);
+    tryRenderCachedYoutubeSubtitle(textForTranslation);
     return;
   }
 
   youtubeActiveCueText = textForTranslation;
+  if (tryRenderCachedYoutubeSubtitle(textForTranslation)) {
+    return;
+  }
+
+  presentYoutubeSubtitlePending();
   translateYoutubeCaption(textForTranslation, youtubePlaybackGeneration);
 }
 
@@ -1371,7 +1501,11 @@ function renderYoutubeSubtitleOverlay(text) {
 }
 
 function removeYoutubeSubtitleOverlay() {
-  document.getElementById(YOUTUBE_OVERLAY_ID)?.remove();
+  const overlay = document.getElementById(YOUTUBE_OVERLAY_ID);
+  if (!overlay) {
+    return;
+  }
+  overlay.remove();
 }
 
 function hideOriginalYoutubeCaptions() {

@@ -18,14 +18,22 @@ import {
   getDefaultSourceLanguage,
   isTranslationTargetLanguageSupported,
   translateText,
-  translateTextBatch
+  translateTextBatch,
+  YOUTUBE_SUBTITLE_TASK_TYPE
 } from './translator.js';
 import {
   DEEPL_API_KEY_STATUS_STORAGE_KEY,
   DEEPL_KEY_STATUS,
+  DEEPL_POLISH_ENABLED_STORAGE_KEY,
+  disableDeepLPolishAuto,
+  getDeepLKeyStatus,
   getDeepLPolishStatus,
   getDefaultDeepLSettings
 } from './deepl-settings.js';
+import {
+  getDefaultCacheLimitSettings,
+  resolveCacheCleanupConfig
+} from './cache-settings.js';
 import {
   LOCAL_TRANSLATION_CACHE_STORAGE_KEY,
   LOCAL_TRANSLATION_CACHE_DIRECTORY_STORAGE_KEY,
@@ -85,7 +93,7 @@ const CLEAR_SITE_CACHE_MESSAGE = 'CLEAR_SITE_CACHE';
 const AUTO_CACHE_CLEANUP_STORAGE_KEY = 'autoCacheCleanupEnabled';
 const SESSION_TRANSLATION_CACHE_STORAGE_PREFIX = 'sessionTranslationCache:';
 const TRANSLATION_TASK_CONCURRENCY = 10;
-const YOUTUBE_SUBTITLE_TASK_TYPE = 'youtube-subtitle';
+const YOUTUBE_SUBTITLE_TASK_CONCURRENCY = 24;
 const WEBPAGE_TRANSLATION_TASK_TYPE = 'full-page';
 const CACHE_SAVE_DEBOUNCE_MS = 150;
 const TASK_STATUS = {
@@ -112,6 +120,7 @@ const protectedTermProtectorState = {
   youtube: null,
   webpage: null
 };
+const siteTranslationCacheIndexes = new Map();
 
 chrome.runtime.onInstalled.addListener(() => {
   setupContextMenus();
@@ -237,7 +246,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     cancelTranslationTasks({
       tabId: sender?.tab?.id,
       url: sender?.tab?.url,
-      taskType: message.taskType
+      taskType: message.taskType,
+      maxPriority: message.maxPriority
     });
     sendResponse({ cancelled: true });
     return false;
@@ -520,6 +530,7 @@ async function translateTextForContentScript(sourceText, sourceUrl, tabId, taskT
       tabId,
       signal,
       availability.apiKey,
+      availability.polishEnabled,
       cacheOnly ? false : availability.networkEnabled,
       priority,
       taskType
@@ -554,6 +565,7 @@ async function translateTextBatchForContentScript(sourceTexts, sourceUrl, tabId,
       tabId,
       signal,
       availability.apiKey,
+      availability.polishEnabled,
       cacheOnly ? false : availability.networkEnabled,
       priority,
       taskType
@@ -569,16 +581,27 @@ async function ensureTranslationAvailable(targetLanguage) {
 
   const settings = await chrome.storage.local.get(getDefaultDeepLSettings());
   const polishStatus = getDeepLPolishStatus(settings);
+
+  if (
+    settings[DEEPL_POLISH_ENABLED_STORAGE_KEY] === true &&
+    !polishStatus.ok &&
+    (polishStatus.reason === 'quota_exhausted' || polishStatus.reason === 'expired')
+  ) {
+    await disableDeepLPolishAuto(polishStatus.reason);
+  }
+
+  const refreshed = await chrome.storage.local.get(getDefaultDeepLSettings());
+  const refreshedPolish = getDeepLPolishStatus(refreshed);
   await chrome.storage.local.set({
-    [DEEPL_API_KEY_STATUS_STORAGE_KEY]: polishStatus.ok
-      ? DEEPL_KEY_STATUS.ACTIVE
-      : DEEPL_KEY_STATUS.MISSING
+    [DEEPL_API_KEY_STATUS_STORAGE_KEY]: getDeepLKeyStatus(refreshed)
   });
+
   return {
     cacheLookupAllowed: true,
     networkEnabled: true,
-    apiKey: polishStatus.apiKey || '',
-    status: polishStatus.ok ? DEEPL_KEY_STATUS.ACTIVE : DEEPL_KEY_STATUS.MISSING
+    polishEnabled: refreshedPolish.ok,
+    apiKey: refreshedPolish.ok ? refreshedPolish.apiKey : '',
+    status: getDeepLKeyStatus(refreshed)
   };
 }
 
@@ -601,8 +624,17 @@ function enqueueTranslationTask(task, metadata = {}) {
   });
 }
 
+function getTranslationTaskConcurrencyLimit() {
+  const hasYoutubeTask = queuedTranslationTasks.some(
+    (queuedTask) => queuedTask.record.type === YOUTUBE_SUBTITLE_TASK_TYPE
+  ) || [...runningTranslationTasks.values()].some(
+    (record) => record.type === YOUTUBE_SUBTITLE_TASK_TYPE
+  );
+  return hasYoutubeTask ? YOUTUBE_SUBTITLE_TASK_CONCURRENCY : TRANSLATION_TASK_CONCURRENCY;
+}
+
 function processTranslationTaskQueue() {
-  while (activeTranslationTasks < TRANSLATION_TASK_CONCURRENCY && queuedTranslationTasks.length > 0) {
+  while (activeTranslationTasks < getTranslationTaskConcurrencyLimit() && queuedTranslationTasks.length > 0) {
     const nextIndex = getNextQueuedTranslationTaskIndex();
     const [queuedTask] = queuedTranslationTasks.splice(nextIndex, 1);
     if (isTranslationTaskCancelled(queuedTask.record)) {
@@ -670,11 +702,12 @@ function createTranslationTaskRecord(metadata = {}) {
   };
 }
 
-function cancelTranslationTasks({ tabId = null, url = '', taskType = '' } = {}) {
+function cancelTranslationTasks({ tabId = null, url = '', taskType = '', maxPriority = undefined } = {}) {
   const shouldCancel = (record) => (
     (tabId === null || tabId === undefined || record.tabId === tabId) &&
     (!url || record.url === String(url || '')) &&
-    (!taskType || record.type === taskType)
+    (!taskType || record.type === taskType) &&
+    (maxPriority === undefined || maxPriority === null || record.priority <= maxPriority)
   );
 
   queuedTranslationTasks = queuedTranslationTasks.filter((queuedTask) => {
@@ -763,6 +796,7 @@ async function translateWithLocalCache(
   tabId = null,
   signal = null,
   apiKey = '',
+  polishEnabled = false,
   networkEnabled = true,
   priority = 5,
   taskType = ''
@@ -794,7 +828,9 @@ async function translateWithLocalCache(
     localCache,
     cache,
     apiKey,
+    polishEnabled,
     networkEnabled,
+    taskType,
     userProtectedTerms,
     useProtectedTermsAsMerged,
     protectedTermProtector,
@@ -812,7 +848,7 @@ async function translateWithLocalCache(
   );
   if (await saveTranslationToLocalIndex(localIndex, cacheKey, translation)) {
     if (await isAutoCacheCleanupEnabled()) {
-      cleanupLocalTranslationCacheIndex(localIndex);
+      cleanupLocalTranslationCacheIndex(localIndex, await getCacheCleanupConfig());
     }
     await saveLocalTranslationCacheIndex(localIndex);
   }
@@ -828,6 +864,7 @@ async function translateBatchWithLocalCache(
   tabId = null,
   signal = null,
   apiKey = '',
+  polishEnabled = false,
   networkEnabled = true,
   priority = 5,
   taskType = ''
@@ -858,7 +895,9 @@ async function translateBatchWithLocalCache(
     localCache: localIndex.cache,
     cache,
     apiKey,
+    polishEnabled,
     networkEnabled,
+    taskType,
     userProtectedTerms,
     useProtectedTermsAsMerged,
     protectedTermProtector,
@@ -881,13 +920,18 @@ async function translateBatchWithLocalCache(
 
   if (localIndexChanged) {
     if (await isAutoCacheCleanupEnabled()) {
-      cleanupLocalTranslationCacheIndex(localIndex);
+      cleanupLocalTranslationCacheIndex(localIndex, await getCacheCleanupConfig());
     }
     await saveLocalTranslationCacheIndex(localIndex);
   }
   await saveActiveTranslationSessionCache(tabId, sourceUrl, cache);
 
   return translations;
+}
+
+async function getCacheCleanupConfig() {
+  const stored = await chrome.storage.sync.get(getDefaultCacheLimitSettings());
+  return resolveCacheCleanupConfig(stored);
 }
 
 async function getUserProtectedTerms() {
@@ -995,14 +1039,49 @@ async function getLocalTranslationCacheDirectory() {
   return localTranslationCacheDirectoryPromise;
 }
 
+function buildSiteCacheIndexKey(targetLanguage, site) {
+  return `${targetLanguage}\u0000${site}`;
+}
+
+function invalidateSiteTranslationCacheIndexes(targetLanguage = '') {
+  if (!targetLanguage) {
+    siteTranslationCacheIndexes.clear();
+    return;
+  }
+
+  for (const key of siteTranslationCacheIndexes.keys()) {
+    if (key.startsWith(`${targetLanguage}\u0000`)) {
+      siteTranslationCacheIndexes.delete(key);
+    }
+  }
+}
+
 async function getLocalTranslationCacheIndex(sourceUrl, targetLanguage) {
   const site = getTranslationCacheSite(sourceUrl);
   const [directory, globalCache] = await Promise.all([
     getLocalTranslationCacheDirectory(),
     getLocalTranslationCache(targetLanguage)
   ]);
+  const indexKey = buildSiteCacheIndexKey(targetLanguage, site);
+  const cachedIndex = siteTranslationCacheIndexes.get(indexKey);
+  if (
+    cachedIndex &&
+    cachedIndex.globalCache === globalCache &&
+    cachedIndex.directory === directory
+  ) {
+    return {
+      cache: cachedIndex.cache,
+      cacheKeySet: cachedIndex.cacheKeySet,
+      directory,
+      globalCache,
+      site,
+      targetLanguage
+    };
+  }
+
   const cacheKeys = getLocalTranslationCacheDirectoryEntry(directory, site, targetLanguage);
   const cache = new Map();
+  const cacheKeySet = new Set(cacheKeys);
 
   for (const cacheKey of cacheKeys) {
     if (globalCache.has(cacheKey)) {
@@ -1010,8 +1089,16 @@ async function getLocalTranslationCacheIndex(sourceUrl, targetLanguage) {
     }
   }
 
+  siteTranslationCacheIndexes.set(indexKey, {
+    cache,
+    cacheKeySet,
+    globalCache,
+    directory
+  });
+
   return {
     cache,
+    cacheKeySet,
     directory,
     globalCache,
     site,
@@ -1029,11 +1116,7 @@ async function saveTranslationToLocalIndex(localIndex, cacheKey, translation) {
     ? existingValue
     : existingValue?.translatedText;
   const hadGlobalValue = existingTranslatedText === translation.translatedText;
-  const hadDirectoryKey = getLocalTranslationCacheDirectoryEntry(
-    localIndex.directory,
-    localIndex.site,
-    localIndex.targetLanguage
-  ).includes(cacheKey);
+  const hadDirectoryKey = localIndex.cacheKeySet?.has(cacheKey) ?? false;
 
   const now = Date.now();
   localIndex.globalCache.set(cacheKey, {
@@ -1056,11 +1139,14 @@ async function saveTranslationToLocalIndex(localIndex, cacheKey, translation) {
     localIndex.targetLanguage,
     cacheKey
   );
+  localIndex.cacheKeySet?.add(cacheKey);
+  localIndex.cache.set(cacheKey, localIndex.globalCache.get(cacheKey));
 
   return !hadGlobalValue || !hadDirectoryKey;
 }
 
 async function saveLocalTranslationCacheIndex(localIndex) {
+  invalidateSiteTranslationCacheIndexes(localIndex.targetLanguage);
   const storageKey = buildLocalTranslationCacheStorageKey(localIndex.targetLanguage);
   localTranslationCachePromises.set(storageKey, Promise.resolve(localIndex.globalCache));
   localTranslationCacheDirectoryPromise = Promise.resolve(localIndex.directory);
@@ -1141,6 +1227,7 @@ async function clearAllTranslationCaches() {
   localTranslationCacheDirectoryPromise = null;
   activeTranslationCaches = new Map();
   pendingLocalTranslationCachePayload = {};
+  invalidateSiteTranslationCacheIndexes();
 }
 
 async function clearLanguageTranslationCache(targetLanguage) {
@@ -1162,6 +1249,7 @@ async function clearLanguageTranslationCache(targetLanguage) {
   });
   localTranslationCachePromises.delete(storageKey);
   localTranslationCacheDirectoryPromise = Promise.resolve(nextDirectory);
+  invalidateSiteTranslationCacheIndexes(normalizedLanguage);
   await clearActiveAndSessionCachesByLanguage(normalizedLanguage);
 }
 
@@ -1188,6 +1276,11 @@ async function clearSiteTranslationCache(sourceUrl) {
   delete nextDirectory[site];
   pendingLocalTranslationCachePayload[LOCAL_TRANSLATION_CACHE_DIRECTORY_STORAGE_KEY] = nextDirectory;
   localTranslationCacheDirectoryPromise = Promise.resolve(nextDirectory);
+  for (const key of siteTranslationCacheIndexes.keys()) {
+    if (key.endsWith(`\u0000${site}`)) {
+      siteTranslationCacheIndexes.delete(key);
+    }
+  }
   await scheduleLocalTranslationCacheStorageSave();
 }
 

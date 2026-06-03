@@ -14,52 +14,68 @@ import {
   parseGoogleTranslateResponse
 } from './google-translate.js';
 import {
+  disableDeepLPolishAuto,
+  recordDeepLPolishUsage
+} from './deepl-settings.js';
+import {
+  DeepLTranslateError,
   fetchDeepLTranslatedTexts,
+  isDeepLQuotaOrAuthError,
   isDeepLTargetLanguageSupported
 } from './deepl-translate.js';
+import {
+  buildTranslationCacheKey,
+  normalizeSourceTextForCache
+} from './translation-cache-key.js';
 
-export { isDeepLTargetLanguageSupported, getDeepLTargetLanguageCode } from './deepl-translate.js';
-export { isGoogleTargetLanguageSupported } from './google-translate.js';
+export { buildTranslationCacheKey } from './translation-cache-key.js';
 
-export const NETWORK_TRANSLATION_PROVIDER = 'google';
-export const POLISH_TRANSLATION_PROVIDER = 'deepl';
-export const BATCH_TRANSLATION_CONFIG = {
+const NETWORK_TRANSLATION_PROVIDER = 'google';
+const POLISH_TRANSLATION_PROVIDER = 'deepl';
+const BATCH_TRANSLATION_CONFIG = {
   maxItems: 20,
   maxChars: 4000,
   minTextLength: 2,
   maxSingleTextLength: 1000
 };
 const NETWORK_TRANSLATE_CONCURRENCY = {
-  initial: 2,
+  initial: 3,
   min: 1,
-  max: 3
+  max: 4
 };
+const POLISH_CONCURRENCY = 2;
 const CACHE_LOOKUP_CONCURRENCY = {
   min: 4,
   normal: 10,
   max: 20
 };
+const YOUTUBE_CACHE_LOOKUP_CONCURRENCY = {
+  min: 8,
+  small: 12,
+  normal: 16,
+  max: 32
+};
+export const YOUTUBE_SUBTITLE_TASK_TYPE = 'youtube-subtitle';
+const YOUTUBE_NETWORK_TRANSLATE_CONCURRENCY = 10;
 
 let activeNetworkRequests = 0;
 const queuedNetworkRequests = [];
 const inFlightTranslations = new Map();
 const inFlightBatchRequests = new Map();
 let networkConcurrency = NETWORK_TRANSLATE_CONCURRENCY.initial;
+let activePolishRequests = 0;
+const queuedPolishRequests = [];
+const polishInFlight = new Map();
 
 export function getDefaultSourceLanguage(targetLanguage) {
   return 'auto';
 }
 
-export function buildTranslationCacheKey(sourceText, sourceLanguage, targetLanguage) {
-  return [
-    'translation',
-    encodeURIComponent(targetLanguage || 'unknown'),
-    encodeURIComponent(sourceLanguage || 'auto'),
-    hashSourceText(normalizeSourceText(sourceText))
-  ].join(':');
+function normalizeSourceText(sourceText) {
+  return normalizeSourceTextForCache(sourceText);
 }
 
-export function normalizeTranslatedText(translatedText, targetLanguage) {
+function normalizeTranslatedText(translatedText, targetLanguage) {
   if (targetLanguage !== 'zh-CN') {
     return translatedText;
   }
@@ -71,7 +87,7 @@ export function normalizeTranslatedText(translatedText, targetLanguage) {
     .replace(/\u3163/g, '|');
 }
 
-export function hasResidualKoreanText(text) {
+function hasResidualKoreanText(text) {
   return /[\uac00-\ud7af]/.test(String(text || ''));
 }
 
@@ -89,6 +105,7 @@ export async function translateText(sourceText, targetLanguage, options = {}) {
 
   const fetchImpl = options.fetchImpl || fetch;
   const apiKey = String(options.apiKey || '').trim();
+  const polishEnabled = options.polishEnabled === true && Boolean(apiKey);
   const networkEnabled = options.networkEnabled !== false;
   const sourceLanguage = options.sourceLanguage || getDefaultSourceLanguage(language.code);
   const localCache = options.localCache;
@@ -105,35 +122,18 @@ export async function translateText(sourceText, targetLanguage, options = {}) {
     return buildTranslationResult(normalizedSource, normalizedSource, language, 'protected');
   }
 
-  if (cache?.has?.(cacheKey)) {
-    const cachedText = normalizeTranslatedText(readCachedTranslatedText(cache.get(cacheKey)), language.code);
-    if (cachedText && !hasResidualKoreanText(cachedText)) {
-      writeTranslationCacheEntry(cache, cacheKey, normalizedSource, sourceLanguage, language.code, cachedText, readCacheProvider(cache.get(cacheKey)));
-      scheduleDeepLPolishFromLocalCache(cacheKey, normalizedSource, sourceLanguage, language.code, {
-        fetchImpl,
-        apiKey,
-        cache,
-        localCache,
-        priority: options.priority
-      });
-      return buildTranslationResult(normalizedSource, cachedText, language, 'cache');
-    }
-  }
-
-  if (localCache?.has?.(cacheKey)) {
-    const cachedText = normalizeTranslatedText(readCachedTranslatedText(localCache.get(cacheKey)), language.code);
-    if (cachedText && !hasResidualKoreanText(cachedText)) {
-      writeTranslationCacheEntry(localCache, cacheKey, normalizedSource, sourceLanguage, language.code, cachedText, readCacheProvider(localCache.get(cacheKey)));
-      writeTranslationCacheEntry(cache, cacheKey, normalizedSource, sourceLanguage, language.code, cachedText, readCacheProvider(localCache.get(cacheKey)));
-      scheduleDeepLPolishFromLocalCache(cacheKey, normalizedSource, sourceLanguage, language.code, {
-        fetchImpl,
-        apiKey,
-        cache,
-        localCache,
-        priority: options.priority
-      });
-      return buildTranslationResult(normalizedSource, cachedText, language, 'cache');
-    }
+  const cachedHit = lookupCachedTranslation(cache, localCache, cacheKey, language.code);
+  if (cachedHit) {
+    touchSessionCacheOnHit(cache, localCache, cacheKey, cachedHit);
+    scheduleDeepLPolishFromLocalCache(cacheKey, normalizedSource, sourceLanguage, language.code, {
+      fetchImpl,
+      apiKey,
+      polishEnabled,
+      cache,
+      localCache,
+      priority: options.priority
+    });
+    return buildTranslationResult(normalizedSource, cachedHit.text, language, 'cache', '', cachedHit.provider);
   }
 
   try {
@@ -177,17 +177,14 @@ export async function translateText(sourceText, targetLanguage, options = {}) {
 
     writeTranslationCacheEntry(cache, cacheKey, normalizedSource, sourceLanguage, language.code, translatedText, NETWORK_TRANSLATION_PROVIDER);
     writeTranslationCacheEntry(localCache, cacheKey, normalizedSource, sourceLanguage, language.code, translatedText, NETWORK_TRANSLATION_PROVIDER);
-
-    const polishedText = await polishLocalPersistentCacheEntry(cacheKey, normalizedSource, sourceLanguage, language.code, {
+    scheduleDeepLPolishFromLocalCache(cacheKey, normalizedSource, sourceLanguage, language.code, {
       fetchImpl,
       apiKey,
+      polishEnabled,
       cache,
       localCache,
       priority: options.priority
     });
-    if (polishedText) {
-      translatedText = polishedText;
-    }
 
     return buildTranslationResult(
       normalizedSource,
@@ -195,7 +192,7 @@ export async function translateText(sourceText, targetLanguage, options = {}) {
       language,
       'network',
       '',
-      polishedText ? POLISH_TRANSLATION_PROVIDER : NETWORK_TRANSLATION_PROVIDER
+      NETWORK_TRANSLATION_PROVIDER
     );
   } catch {
     return buildTranslationResult(
@@ -215,6 +212,7 @@ export async function translateTextBatch(sourceTexts, targetLanguage, options = 
   const localCache = options.localCache;
   const fetchImpl = options.fetchImpl || fetch;
   const apiKey = String(options.apiKey || '').trim();
+  const polishEnabled = options.polishEnabled === true && Boolean(apiKey);
   const networkEnabled = options.networkEnabled !== false;
   const userProtectedTerms = options.userProtectedTerms || [];
   const useTermsAsMerged = options.useProtectedTermsAsMerged === true;
@@ -239,36 +237,18 @@ export async function translateTextBatch(sourceTexts, targetLanguage, options = 
       return;
     }
 
-    const activeText = cache?.has?.(cacheKey)
-      ? normalizeTranslatedText(readCachedTranslatedText(cache.get(cacheKey)), language.code)
-      : '';
-    if (activeText && !hasResidualKoreanText(activeText)) {
-      writeTranslationCacheEntry(cache, cacheKey, sourceText, sourceLanguage, language.code, activeText, readCacheProvider(cache.get(cacheKey)));
+    const cachedHit = lookupCachedTranslation(cache, localCache, cacheKey, language.code);
+    if (cachedHit) {
+      touchSessionCacheOnHit(cache, localCache, cacheKey, cachedHit);
       scheduleDeepLPolishFromLocalCache(cacheKey, sourceText, sourceLanguage, language.code, {
         fetchImpl,
         apiKey,
+        polishEnabled,
         cache,
         localCache,
         priority: options.priority
       });
-      results[index] = buildTranslationResult(sourceText, activeText, language, 'cache');
-      return;
-    }
-
-    const localText = localCache?.has?.(cacheKey)
-      ? normalizeTranslatedText(readCachedTranslatedText(localCache.get(cacheKey)), language.code)
-      : '';
-    if (localText && !hasResidualKoreanText(localText)) {
-      writeTranslationCacheEntry(cache, cacheKey, sourceText, sourceLanguage, language.code, localText, readCacheProvider(localCache.get(cacheKey)));
-      writeTranslationCacheEntry(localCache, cacheKey, sourceText, sourceLanguage, language.code, localText, readCacheProvider(localCache.get(cacheKey)));
-      scheduleDeepLPolishFromLocalCache(cacheKey, sourceText, sourceLanguage, language.code, {
-        fetchImpl,
-        apiKey,
-        cache,
-        localCache,
-        priority: options.priority
-      });
-      results[index] = buildTranslationResult(sourceText, localText, language, 'cache');
+      results[index] = buildTranslationResult(sourceText, cachedHit.text, language, 'cache', '', cachedHit.provider);
       return;
     }
 
@@ -293,13 +273,14 @@ export async function translateTextBatch(sourceTexts, targetLanguage, options = 
     return results;
   }
 
-  const groupedItems = splitBatchTranslationItems(missingItems, options.isPageHidden);
+  const groupedItems = splitBatchTranslationItems(missingItems, options.isPageHidden, options.taskType);
   const batchOptions = {
     fetchImpl,
     sourceLanguage,
     cache,
     localCache,
     apiKey,
+    polishEnabled,
     priority: options.priority,
     enableChineseResidueRetry: options.enableChineseResidueRetry === true,
     userProtectedTermsForRetry: options.userProtectedTermsForRetry || [],
@@ -309,7 +290,7 @@ export async function translateTextBatch(sourceTexts, targetLanguage, options = 
 
   await runWithConcurrencyLimit(
     groupedItems,
-    options.isPageHidden ? NETWORK_TRANSLATE_CONCURRENCY.min : networkConcurrency,
+    getNetworkTranslateConcurrency(options),
     (group) => processMissingTranslationGroup(group, results, batchOptions)
   );
 
@@ -323,6 +304,7 @@ async function processMissingTranslationGroup(group, results, batchOptions) {
     cache,
     localCache,
     apiKey,
+    polishEnabled,
     priority,
     enableChineseResidueRetry,
     userProtectedTermsForRetry,
@@ -379,17 +361,14 @@ async function processMissingTranslationGroup(group, results, batchOptions) {
 
     writeTranslationCacheEntry(cache, item.cacheKey, item.sourceText, sourceLanguage, language.code, translatedText, NETWORK_TRANSLATION_PROVIDER);
     writeTranslationCacheEntry(localCache, item.cacheKey, item.sourceText, sourceLanguage, language.code, translatedText, NETWORK_TRANSLATION_PROVIDER);
-
-    const polishedText = await polishLocalPersistentCacheEntry(item.cacheKey, item.sourceText, sourceLanguage, language.code, {
+    scheduleDeepLPolishFromLocalCache(item.cacheKey, item.sourceText, sourceLanguage, language.code, {
       fetchImpl,
       apiKey,
+      polishEnabled,
       cache,
       localCache,
       priority
     });
-    if (polishedText) {
-      translatedText = polishedText;
-    }
 
     results[item.index] = buildTranslationResult(
       item.sourceText,
@@ -397,7 +376,7 @@ async function processMissingTranslationGroup(group, results, batchOptions) {
       language,
       'network',
       '',
-      polishedText ? POLISH_TRANSLATION_PROVIDER : NETWORK_TRANSLATION_PROVIDER
+      NETWORK_TRANSLATION_PROVIDER
     );
   }
 }
@@ -544,10 +523,13 @@ function markNetworkRequestFailure() {
   networkConcurrency = NETWORK_TRANSLATE_CONCURRENCY.min;
 }
 
-const polishInFlight = new Map();
-
 function scheduleDeepLPolishFromLocalCache(cacheKey, sourceText, sourceLanguage, targetLanguage, options) {
-  if (!options.apiKey || !options.localCache?.has?.(cacheKey)) {
+  if (!options.polishEnabled || !options.apiKey || !options.localCache?.has?.(cacheKey)) {
+    return;
+  }
+
+  const cachedEntry = options.localCache.get(cacheKey);
+  if (readCacheProvider(cachedEntry) === POLISH_TRANSLATION_PROVIDER) {
     return;
   }
 
@@ -555,7 +537,9 @@ function scheduleDeepLPolishFromLocalCache(cacheKey, sourceText, sourceLanguage,
     return;
   }
 
-  const promise = polishLocalPersistentCacheEntry(cacheKey, sourceText, sourceLanguage, targetLanguage, options)
+  const promise = enqueuePolishRequest(() =>
+    polishLocalPersistentCacheEntry(cacheKey, sourceText, sourceLanguage, targetLanguage, options)
+  )
     .catch(() => null)
     .finally(() => {
       polishInFlight.delete(cacheKey);
@@ -563,10 +547,32 @@ function scheduleDeepLPolishFromLocalCache(cacheKey, sourceText, sourceLanguage,
   polishInFlight.set(cacheKey, promise);
 }
 
+function enqueuePolishRequest(task) {
+  return new Promise((resolve, reject) => {
+    queuedPolishRequests.push({ task, resolve, reject });
+    processPolishRequestQueue();
+  });
+}
+
+function processPolishRequestQueue() {
+  while (activePolishRequests < POLISH_CONCURRENCY && queuedPolishRequests.length > 0) {
+    const [queuedRequest] = queuedPolishRequests.splice(0, 1);
+    activePolishRequests += 1;
+
+    Promise.resolve()
+      .then(queuedRequest.task)
+      .then(queuedRequest.resolve, queuedRequest.reject)
+      .finally(() => {
+        activePolishRequests -= 1;
+        processPolishRequestQueue();
+      });
+  }
+}
+
 async function polishLocalPersistentCacheEntry(cacheKey, sourceText, sourceLanguage, targetLanguage, options) {
   const apiKey = String(options.apiKey || '').trim();
   const localCache = options.localCache;
-  if (!apiKey || !localCache?.has?.(cacheKey)) {
+  if (!options.polishEnabled || !apiKey || !localCache?.has?.(cacheKey)) {
     return '';
   }
 
@@ -597,16 +603,50 @@ async function polishLocalPersistentCacheEntry(cacheKey, sourceText, sourceLangu
       requestOptions
     );
     const polishedText = normalizeTranslatedText(polishedTexts[0] || '', targetLanguage);
-    if (!polishedText || polishedText === cachedText) {
+    if (!isValidPolishResult(normalizedSource, cachedText, polishedText, targetLanguage)) {
       return cachedText;
     }
 
     writeTranslationCacheEntry(options.cache, cacheKey, normalizedSource, sourceLanguage, targetLanguage, polishedText, POLISH_TRANSLATION_PROVIDER);
     writeTranslationCacheEntry(localCache, cacheKey, normalizedSource, sourceLanguage, targetLanguage, polishedText, POLISH_TRANSLATION_PROVIDER);
+    await recordDeepLPolishUsage(normalizedSource.length);
     return polishedText;
-  } catch {
+  } catch (error) {
+    if (error instanceof DeepLTranslateError && isDeepLQuotaOrAuthError(error)) {
+      await disableDeepLPolishAuto(
+        error.status === 456 ? 'quota_exhausted' : 'auth_failed'
+      );
+    }
     return cachedText;
   }
+}
+
+function isValidPolishResult(sourceText, cachedText, polishedText, targetLanguage) {
+  if (!polishedText || polishedText === cachedText) {
+    return false;
+  }
+
+  if (polishedText === sourceText) {
+    return false;
+  }
+
+  if (hasResidualKoreanText(polishedText)) {
+    return false;
+  }
+
+  if (
+    targetLanguage === 'zh-CN' &&
+    hasChineseTargetEnglishResidue(polishedText, targetLanguage)
+  ) {
+    return false;
+  }
+
+  const maxLength = Math.max(sourceText.length, cachedText.length) * 3 + 32;
+  if (polishedText.length > maxLength) {
+    return false;
+  }
+
+  return true;
 }
 
 function buildTranslationResult(sourceText, translatedText, language, source = '', reason = '', provider = '') {
@@ -634,8 +674,8 @@ function normalizeBatchSourceTexts(sourceTexts) {
     .map((sourceText) => normalizeSourceText(sourceText));
 }
 
-function splitBatchTranslationItems(items, isPageHidden = false) {
-  const concurrencyHint = getCacheLookupConcurrency(items.length, isPageHidden);
+function splitBatchTranslationItems(items, isPageHidden = false, taskType = '') {
+  const concurrencyHint = getCacheLookupConcurrency(items.length, isPageHidden, taskType);
   const maxItemsPerGroup = Math.min(BATCH_TRANSLATION_CONFIG.maxItems, Math.max(1, concurrencyHint));
   const groups = [];
   let currentGroup = [];
@@ -672,17 +712,25 @@ function splitBatchTranslationItems(items, isPageHidden = false) {
   return groups;
 }
 
-export function getCacheLookupConcurrency(taskCount, isPageHidden = false) {
+function getCacheLookupConcurrency(taskCount, isPageHidden = false, taskType = '') {
+  const isYoutube = taskType === YOUTUBE_SUBTITLE_TASK_TYPE;
   if (isPageHidden) {
-    return CACHE_LOOKUP_CONCURRENCY.min;
+    return isYoutube ? YOUTUBE_CACHE_LOOKUP_CONCURRENCY.min : CACHE_LOOKUP_CONCURRENCY.min;
   }
   if (taskCount <= 50) {
-    return 6;
+    return isYoutube ? YOUTUBE_CACHE_LOOKUP_CONCURRENCY.small : 6;
   }
   if (taskCount <= 300) {
-    return CACHE_LOOKUP_CONCURRENCY.normal;
+    return isYoutube ? YOUTUBE_CACHE_LOOKUP_CONCURRENCY.normal : CACHE_LOOKUP_CONCURRENCY.normal;
   }
-  return CACHE_LOOKUP_CONCURRENCY.max;
+  return isYoutube ? YOUTUBE_CACHE_LOOKUP_CONCURRENCY.max : CACHE_LOOKUP_CONCURRENCY.max;
+}
+
+function getNetworkTranslateConcurrency(options = {}) {
+  if (options.taskType === YOUTUBE_SUBTITLE_TASK_TYPE) {
+    return options.isPageHidden ? 2 : YOUTUBE_NETWORK_TRANSLATE_CONCURRENCY;
+  }
+  return options.isPageHidden ? NETWORK_TRANSLATE_CONCURRENCY.min : networkConcurrency;
 }
 
 function readCachedTranslatedText(value) {
@@ -695,6 +743,59 @@ function readCachedTranslatedText(value) {
 
 function readCacheProvider(value) {
   return typeof value?.provider === 'string' ? value.provider : '';
+}
+
+function lookupCachedTranslation(cache, localCache, cacheKey, languageCode) {
+  if (!cacheKey) {
+    return null;
+  }
+
+  let entry = cache?.get?.(cacheKey);
+  if (!entry && localCache?.has?.(cacheKey)) {
+    entry = localCache.get(cacheKey);
+  } else if (!entry) {
+    return null;
+  }
+
+  const translatedText = readCachedTranslatedText(entry);
+  if (!translatedText || hasResidualKoreanText(translatedText)) {
+    return null;
+  }
+
+  return {
+    text: normalizeTranslatedText(translatedText, languageCode),
+    provider: readCacheProvider(entry) || NETWORK_TRANSLATION_PROVIDER
+  };
+}
+
+function touchSessionCacheOnHit(cache, localCache, cacheKey, cachedHit) {
+  if (!cacheKey || !cachedHit?.text) {
+    return;
+  }
+
+  const existing = cache?.get?.(cacheKey);
+  if (existing && existing.translatedText === cachedHit.text) {
+    existing.lastUsedAt = Date.now();
+    if (typeof existing.hitCount === 'number') {
+      existing.hitCount += 1;
+    }
+    return;
+  }
+
+  if (!cache?.set || !localCache?.has?.(cacheKey)) {
+    return;
+  }
+
+  const localEntry = localCache.get(cacheKey);
+  if (!localEntry || readCachedTranslatedText(localEntry) !== cachedHit.text) {
+    return;
+  }
+
+  cache.set(cacheKey, {
+    ...localEntry,
+    lastUsedAt: Date.now(),
+    hitCount: typeof localEntry.hitCount === 'number' ? localEntry.hitCount + 1 : 1
+  });
 }
 
 async function maybeRetryChineseResidueTranslation({
@@ -757,17 +858,3 @@ function writeTranslationCacheEntry(cache, cacheKey, sourceText, sourceLanguage,
   });
 }
 
-function hashSourceText(sourceText) {
-  let hash = 2166136261;
-  const text = String(sourceText || '');
-  for (let index = 0; index < text.length; index += 1) {
-    hash ^= text.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-
-  return `${text.length.toString(36)}-${(hash >>> 0).toString(36)}`;
-}
-
-function normalizeSourceText(sourceText) {
-  return String(sourceText || '').replace(/\s+/g, ' ').trim();
-}

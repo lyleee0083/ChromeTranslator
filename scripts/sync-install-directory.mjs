@@ -18,6 +18,8 @@ if (!fs.existsSync(installDir)) {
   process.exit(1);
 }
 
+clearInstallDirectory();
+
 for (const file of RUNTIME_FILES) {
   copyFile(file, file);
 }
@@ -27,6 +29,16 @@ for (const directory of RUNTIME_DIRECTORIES) {
 }
 
 console.log(`Synced to ${installDir}`);
+
+function clearInstallDirectory() {
+  if (installDir !== path.resolve('D:\\Chrome Translator')) {
+    throw new Error(`拒绝清空非预期安装目录: ${installDir}`);
+  }
+
+  for (const entry of fs.readdirSync(installDir)) {
+    fs.rmSync(path.join(installDir, entry), { recursive: true, force: true });
+  }
+}
 
 function copyFile(sourceRelativePath, destinationRelativePath) {
   const sourcePath = path.join(projectRoot, sourceRelativePath);

@@ -40,7 +40,7 @@ export function addLocalTranslationCacheDirectoryKey(directory, site, targetLang
   ]);
 }
 
-export function setLocalTranslationCacheDirectoryEntry(directory, site, targetLanguage, cacheKeys) {
+function setLocalTranslationCacheDirectoryEntry(directory, site, targetLanguage, cacheKeys) {
   const nextDirectory = { ...(directory || {}) };
   nextDirectory[site] = {
     ...(nextDirectory[site] || {}),
@@ -107,7 +107,7 @@ export function getLocalTranslationCacheStats(directory, languageCaches) {
   };
 }
 
-export function removeLocalTranslationCacheDirectoryKeys(directory, targetLanguage, keysToRemove) {
+function removeLocalTranslationCacheDirectoryKeys(directory, targetLanguage, keysToRemove) {
   const removeSet = keysToRemove instanceof Set ? keysToRemove : new Set(keysToRemove || []);
   const nextDirectory = {};
 

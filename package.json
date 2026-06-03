@@ -1,6 +1,6 @@
 {
   "name": "chrome-translator",
-  "version": "0.1.7",
+  "version": "0.1.22",
   "private": true,
   "type": "module",
   "devDependencies": {
@@ -11,6 +11,7 @@
     "package": "node scripts/package-extension.mjs",
     "sync-install": "node scripts/sync-install-directory.mjs",
     "install-hooks": "node scripts/install-git-hooks.mjs",
-    "commit": "node scripts/git-commit-from-changelog.mjs"
+    "commit": "node scripts/git-commit-from-changelog.mjs",
+    "push": "node scripts/git-push-github.mjs"
   }
 }

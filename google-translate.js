@@ -1,6 +1,6 @@
-export const GOOGLE_TRANSLATE_ENDPOINT = 'https://clients5.google.com/translate_a/t';
+const GOOGLE_TRANSLATE_ENDPOINT = 'https://clients5.google.com/translate_a/t';
 
-export const GOOGLE_TARGET_LANGUAGE_MAP = {
+const GOOGLE_TARGET_LANGUAGE_MAP = {
   'zh-CN': 'zh-CN',
   en: 'en',
   ja: 'ja',
@@ -10,12 +10,8 @@ export const GOOGLE_TARGET_LANGUAGE_MAP = {
   de: 'de'
 };
 
-export function getGoogleTargetLanguageCode(targetLanguage) {
+function getGoogleTargetLanguageCode(targetLanguage) {
   return GOOGLE_TARGET_LANGUAGE_MAP[targetLanguage] || '';
-}
-
-export function isGoogleTargetLanguageSupported(targetLanguage) {
-  return Boolean(getGoogleTargetLanguageCode(targetLanguage));
 }
 
 export function buildGoogleTranslateUrl(sourceTexts, targetLanguage, sourceLanguage = 'auto') {
