@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Chrome Translator",
   "description": "Translate full-page text and YouTube subtitles.",
-  "version": "0.1.0",
+  "version": "0.1.5",
   "permissions": ["contextMenus", "storage", "tabs"],
   "host_permissions": [
     "https://api-free.deepl.com/*",
@@ -33,10 +33,9 @@
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
-      "js": ["content.js"],
+      "js": ["content.bundle.js"],
       "css": ["content.css"],
-      "run_at": "document_idle",
-      "type": "module"
+      "run_at": "document_idle"
     }
   ]
 }

@@ -4,14 +4,19 @@
 
 项目开发已结束。此后**每一次**代码改动完成时，必须按顺序执行：
 
-1. **自我审查**：删除与当前功能无关的代码、注释、文件；不保留测试目录/测试脚本；不保留构建残留（`dist/` 仅由 `npm run package` 生成）；不保留旧版迁移/兼容逻辑。
-2. **更新本文档**：只写仓库里**已实现**的功能、文件、配置与常量；不写计划、不写未实现能力、不写「不支持 xxx」类说明。
-3. **核对打包清单**：新增或删除运行时 `.js` / `.html` 时，同步修改 `scripts/package-extension.mjs` 的 `runtimeFiles`。
-4. **打包验证**：执行 `npm run package`，确认 zip 可加载。
+1. **改动范围**：只修改本仓库根目录（当前工作区路径）下的本地文件；不修改仓库外路径，不把改动散落到未纳入本仓库的路径。
+2. **变更记录与版本**：在 `CHANGLOG.md` 追加一节：`## x.y.z` 下一行写**一行标题**（勿以 `-` 开头），再写 `-` 条目列表。每完成一次改动补丁位 +1，并同步 `manifest.json`、`package.json` 的 `version`。Git **提交标题**为 `x.y.z 标题`（由 `CHANGLOG.md` 生成），正文为条目列表；`git push` 不再单独写说明。
+3. **Git 提交**：先写好 `CHANGLOG.md` 再提交。首次在本机克隆后执行一次 `npm run install-hooks`；之后用 `git commit`（自动填入说明）或 `npm run commit`（直接用说明提交，可跟 `-- path` 等参数）。
+4. **自我审查**：删除与当前功能无关的代码、注释、文件；不保留测试目录/测试脚本；不保留构建残留（`dist/` 仅由 `npm run package` 生成）；不保留旧版迁移/兼容逻辑。
+5. **更新本文档**：只写仓库里**已实现**的功能、文件、配置与常量；不写计划、不写未实现能力、不写「不支持 xxx」类说明。
+6. **内容脚本打包**：修改 `content.js` 或其依赖后，`npm run package` / `npm run sync-install` 会自动执行 `npm run build:content`，生成 `content.bundle.js`（manifest 注入此文件，不用 ES module）。
+7. **核对打包清单**：新增或删除运行时 `.js` / `.html` 时，同步修改 `scripts/extension-runtime-files.mjs` 的 `RUNTIME_FILES`。
+8. **打包验证**：执行 `npm run package`，确认 zip 可加载。
+9. **同步 Chrome 安装目录**：执行 `npm run sync-install`，将运行时文件覆盖到 `D:\Chrome Translator`（本机已解压扩展目录）；在 `chrome://extensions` 点重新加载。此步骤为部署动作，**不要**写入 `CHANGLOG.md`。
 
 ---
 
-版本 0.1.0 · Manifest V3 Chrome 扩展 · DeepL API
+版本 0.1.5 · Manifest V3 Chrome 扩展 · DeepL API
 
 ## 功能
 
@@ -27,7 +32,8 @@
 ```
 manifest.json
 background.js
-content.js
+content.js              # 源码；运行时注入 content.bundle.js
+content.bundle.js       # build:content 生成
 content.css
 translator.js
 deepl-settings.js
@@ -44,13 +50,22 @@ youtube-subtitles.js
 popup.html / popup.js
 options.html / options.js
 icons/icon16.png, icon48.png, icon128.png
+scripts/bundle-content-script.mjs
+scripts/extension-runtime-files.mjs
 scripts/package-extension.mjs
+scripts/sync-install-directory.mjs
+scripts/changelog-commit-message.mjs
+scripts/prepare-commit-msg.mjs
+scripts/git-commit-from-changelog.mjs
+scripts/install-git-hooks.mjs
+.githooks/prepare-commit-msg
 package.json
 .gitignore
+CHANGLOG.md
 DEVELOPMENT.md
 ```
 
-打包：`npm run package` → `dist/package/ChromeTranslator/`、`dist/ChromeTranslator-0.1.0.zip`
+打包：`npm run package` → `dist/package/ChromeTranslator/`、`dist/ChromeTranslator-0.1.5.zip`
 
 ## 模块
 
@@ -120,9 +135,13 @@ DeepL `target_lang` 映射见 `translator.js` → `DEEPL_TARGET_LANGUAGE_MAP`
 ## 命令
 
 ```bash
+npm run install-hooks   # 首次：启用 .githooks，提交说明读 CHANGLOG.md
+npm run commit          # git commit -F <自 CHANGLOG 生成的说明>
+npm run build:content   # 仅改 content 链时也可单独执行
 npm run package
+npm run sync-install    # 覆盖 D:\Chrome Translator（Chrome 已加载目录）
 ```
 
 ## 加载
 
-`chrome://extensions` → 开发者模式 → 加载已解压的扩展 → 源码根目录或 `dist/package/ChromeTranslator/`
+`chrome://extensions` → 开发者模式 → 加载已解压的扩展 → `D:\Chrome Translator`（日常）或 `dist/package/ChromeTranslator/`（打包验证）

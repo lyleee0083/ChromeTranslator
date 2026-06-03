@@ -96,11 +96,11 @@ let coreListenersStarted = false;
 let webpageIdleScanHandle = 0;
 
 chrome.storage.sync.get({
-  [YOUTUBE_SUBTITLE_STORAGE_KEY]: DEFAULT_YOUTUBE_SUBTITLE_TRANSLATION_ENABLED,
+  [YOUTUBE_SUBTITLE_TRANSLATION_STORAGE_KEY]: DEFAULT_YOUTUBE_SUBTITLE_TRANSLATION_ENABLED,
   [WEBPAGE_TRANSLATION_STORAGE_KEY]: DEFAULT_WEBPAGE_TRANSLATION_ENABLED,
   [EXCLUDED_TRANSLATION_HOSTS_STORAGE_KEY]: DEFAULT_EXCLUDED_TRANSLATION_HOSTS
 }).then((stored) => {
-  youtubeSubtitleEnabled = Boolean(stored[YOUTUBE_SUBTITLE_STORAGE_KEY]);
+  youtubeSubtitleEnabled = Boolean(stored[YOUTUBE_SUBTITLE_TRANSLATION_STORAGE_KEY]);
   webpageTranslationEnabled = Boolean(stored[WEBPAGE_TRANSLATION_STORAGE_KEY]);
   translationExcludedForSite = isTranslationHostExcluded(
     location.href,
@@ -114,8 +114,8 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
     return;
   }
 
-  if (changes[YOUTUBE_SUBTITLE_STORAGE_KEY]) {
-    youtubeSubtitleEnabled = Boolean(changes[YOUTUBE_SUBTITLE_STORAGE_KEY].newValue);
+  if (changes[YOUTUBE_SUBTITLE_TRANSLATION_STORAGE_KEY]) {
+    youtubeSubtitleEnabled = Boolean(changes[YOUTUBE_SUBTITLE_TRANSLATION_STORAGE_KEY].newValue);
     syncTranslatorRuntime();
   }
 
