@@ -16,22 +16,15 @@ import {
 import {
   buildTranslationCacheKey,
   getDefaultSourceLanguage,
-  isDeepLTargetLanguageSupported,
+  isTranslationTargetLanguageSupported,
   translateText,
   translateTextBatch
 } from './translator.js';
 import {
   DEEPL_API_KEY_STATUS_STORAGE_KEY,
-  DEEPL_API_KEY_STORAGE_KEY,
   DEEPL_KEY_STATUS,
-  DEEPL_LIMIT_MODE,
-  DEEPL_NETWORK_ENABLED_STORAGE_KEY,
-  DEEPL_QUOTA_LIMIT_CHARS_STORAGE_KEY,
-  DEEPL_QUOTA_MODE_STORAGE_KEY,
-  DEEPL_QUOTA_USED_CHARS_STORAGE_KEY,
-  getDeepLNetworkStatus,
-  getDefaultDeepLSettings,
-  DEEPL_CONCURRENCY_LIMIT_STORAGE_KEY
+  getDeepLPolishStatus,
+  getDefaultDeepLSettings
 } from './deepl-settings.js';
 import {
   LOCAL_TRANSLATION_CACHE_STORAGE_KEY,
@@ -529,8 +522,7 @@ async function translateTextForContentScript(sourceText, sourceUrl, tabId, taskT
       availability.apiKey,
       cacheOnly ? false : availability.networkEnabled,
       priority,
-      taskType,
-      availability.deeplConcurrencyLimit
+      taskType
     ),
     { tabId, url: sourceUrl, taskType, priority }
   );
@@ -564,48 +556,30 @@ async function translateTextBatchForContentScript(sourceTexts, sourceUrl, tabId,
       availability.apiKey,
       cacheOnly ? false : availability.networkEnabled,
       priority,
-      taskType,
-      availability.deeplConcurrencyLimit
+      taskType
     ),
     { tabId, url: sourceUrl, taskType, priority }
   );
 }
 
 async function ensureTranslationAvailable(targetLanguage) {
-  if (!isDeepLTargetLanguageSupported(targetLanguage)) {
+  if (!isTranslationTargetLanguageSupported(targetLanguage)) {
     return { cacheLookupAllowed: false, networkEnabled: false, reason: 'unsupported_language' };
   }
 
-  const settings = await chrome.storage.local.get({
-    ...getDefaultDeepLSettings()
-  });
-  const networkStatus = getDeepLNetworkStatus(settings);
+  const settings = await chrome.storage.local.get(getDefaultDeepLSettings());
+  const polishStatus = getDeepLPolishStatus(settings);
   await chrome.storage.local.set({
-    [DEEPL_API_KEY_STATUS_STORAGE_KEY]: getDeepLStorageStatus(networkStatus)
+    [DEEPL_API_KEY_STATUS_STORAGE_KEY]: polishStatus.ok
+      ? DEEPL_KEY_STATUS.ACTIVE
+      : DEEPL_KEY_STATUS.MISSING
   });
   return {
     cacheLookupAllowed: true,
-    networkEnabled: networkStatus.ok,
-    apiKey: settings[DEEPL_API_KEY_STORAGE_KEY],
-    deeplConcurrencyLimit: settings[DEEPL_CONCURRENCY_LIMIT_STORAGE_KEY],
-    status: networkStatus.status || networkStatus.reason
+    networkEnabled: true,
+    apiKey: polishStatus.apiKey || '',
+    status: polishStatus.ok ? DEEPL_KEY_STATUS.ACTIVE : DEEPL_KEY_STATUS.MISSING
   };
-}
-
-function getDeepLStorageStatus(networkStatus) {
-  if (networkStatus.ok) {
-    return networkStatus.status || DEEPL_KEY_STATUS.ACTIVE;
-  }
-  if (networkStatus.reason === 'quota_exhausted') {
-    return DEEPL_KEY_STATUS.QUOTA_EXHAUSTED;
-  }
-  if (networkStatus.reason === 'expired') {
-    return DEEPL_KEY_STATUS.EXPIRED;
-  }
-  if (networkStatus.reason === 'network_disabled') {
-    return DEEPL_KEY_STATUS.NETWORK_DISABLED;
-  }
-  return DEEPL_KEY_STATUS.MISSING;
 }
 
 async function isSourceUrlExcluded(sourceUrl) {
@@ -791,8 +765,7 @@ async function translateWithLocalCache(
   apiKey = '',
   networkEnabled = true,
   priority = 5,
-  taskType = '',
-  deeplConcurrencyLimit = undefined
+  taskType = ''
 ) {
   if (signal?.aborted) {
     return null;
@@ -805,13 +778,11 @@ async function translateWithLocalCache(
   const [
     userProtectedTerms,
     protectedTermProtector,
-    residueRetryOptions,
-    isQuotaNearLimit
+    residueRetryOptions
   ] = await Promise.all([
     resolveProtectedTermsForTaskType(taskType),
     getProtectedTermProtector(taskType),
-    getChineseResidueRetryOptions(taskType),
-    isDeepLQuotaAlmostUsed()
+    getChineseResidueRetryOptions(taskType)
   ]);
   const useProtectedTermsAsMerged = shouldUseMergedProtectedTerms(taskType);
   if (signal?.aborted) {
@@ -827,8 +798,6 @@ async function translateWithLocalCache(
     userProtectedTerms,
     useProtectedTermsAsMerged,
     protectedTermProtector,
-    isQuotaAlmostUsed: isQuotaNearLimit,
-    deeplConcurrencyLimit,
     priority,
     ...residueRetryOptions
   });
@@ -847,7 +816,6 @@ async function translateWithLocalCache(
     }
     await saveLocalTranslationCacheIndex(localIndex);
   }
-  await recordDeepLUsage([translation]);
   await saveActiveTranslationSessionCache(tabId, sourceUrl, cache);
 
   return translation;
@@ -862,8 +830,7 @@ async function translateBatchWithLocalCache(
   apiKey = '',
   networkEnabled = true,
   priority = 5,
-  taskType = '',
-  deeplConcurrencyLimit = undefined
+  taskType = ''
 ) {
   if (signal?.aborted) {
     return [];
@@ -876,13 +843,11 @@ async function translateBatchWithLocalCache(
   const [
     userProtectedTerms,
     protectedTermProtector,
-    residueRetryOptions,
-    isQuotaNearLimit
+    residueRetryOptions
   ] = await Promise.all([
     resolveProtectedTermsForTaskType(taskType),
     getProtectedTermProtector(taskType),
-    getChineseResidueRetryOptions(taskType),
-    isDeepLQuotaAlmostUsed()
+    getChineseResidueRetryOptions(taskType)
   ]);
   const useProtectedTermsAsMerged = shouldUseMergedProtectedTerms(taskType);
   if (signal?.aborted) {
@@ -897,8 +862,6 @@ async function translateBatchWithLocalCache(
     userProtectedTerms,
     useProtectedTermsAsMerged,
     protectedTermProtector,
-    isQuotaAlmostUsed: isQuotaNearLimit,
-    deeplConcurrencyLimit,
     priority,
     ...residueRetryOptions
   });
@@ -922,7 +885,6 @@ async function translateBatchWithLocalCache(
     }
     await saveLocalTranslationCacheIndex(localIndex);
   }
-  await recordDeepLUsage(translations);
   await saveActiveTranslationSessionCache(tabId, sourceUrl, cache);
 
   return translations;
@@ -937,50 +899,11 @@ async function getUserProtectedTerms() {
     : [];
 }
 
-async function isDeepLQuotaAlmostUsed() {
-  const settings = await chrome.storage.local.get(getDefaultDeepLSettings());
-  if (settings[DEEPL_QUOTA_MODE_STORAGE_KEY] === DEEPL_LIMIT_MODE.INFINITE) {
-    return false;
-  }
-  const limit = Number(settings[DEEPL_QUOTA_LIMIT_CHARS_STORAGE_KEY] || 0);
-  if (!Number.isFinite(limit) || limit <= 0) {
-    return false;
-  }
-  const used = Number(settings[DEEPL_QUOTA_USED_CHARS_STORAGE_KEY] || 0);
-  const remaining = limit - used;
-  return remaining <= 10000;
-}
-
 async function isAutoCacheCleanupEnabled() {
   const stored = await chrome.storage.sync.get({
     [AUTO_CACHE_CLEANUP_STORAGE_KEY]: false
   });
   return Boolean(stored[AUTO_CACHE_CLEANUP_STORAGE_KEY]);
-}
-
-async function recordDeepLUsage(translations) {
-  const usedChars = (Array.isArray(translations) ? translations : [])
-    .filter((translation) => translation?.source === 'network')
-    .reduce((total, translation) => total + String(translation.sourceText || '').length, 0);
-  if (usedChars <= 0) {
-    return;
-  }
-
-  const settings = await chrome.storage.local.get(getDefaultDeepLSettings());
-  const nextUsedChars = Number(settings[DEEPL_QUOTA_USED_CHARS_STORAGE_KEY] || 0) + usedChars;
-  const payload = {
-    [DEEPL_QUOTA_USED_CHARS_STORAGE_KEY]: nextUsedChars
-  };
-
-  if (
-    settings[DEEPL_QUOTA_MODE_STORAGE_KEY] === DEEPL_LIMIT_MODE.CUSTOM &&
-    nextUsedChars >= Number(settings[DEEPL_QUOTA_LIMIT_CHARS_STORAGE_KEY] || 0)
-  ) {
-    payload[DEEPL_NETWORK_ENABLED_STORAGE_KEY] = false;
-    payload[DEEPL_API_KEY_STATUS_STORAGE_KEY] = DEEPL_KEY_STATUS.QUOTA_EXHAUSTED;
-  }
-
-  await chrome.storage.local.set(payload);
 }
 
 async function getActiveTranslationCache(tabId, sourceUrl) {
@@ -1114,7 +1037,7 @@ async function saveTranslationToLocalIndex(localIndex, cacheKey, translation) {
 
   const now = Date.now();
   localIndex.globalCache.set(cacheKey, {
-    provider: 'deepl',
+    provider: translation.provider || existingValue?.provider || 'google',
     sourceLanguage: getDefaultSourceLanguage(localIndex.targetLanguage),
     targetLanguage: localIndex.targetLanguage,
     sourceHash: cacheKey.split(':').pop(),

@@ -1,5 +1,19 @@
 # 变更记录
 
+## 0.1.7
+
+README 与当前扩展能力对齐
+
+- 在线翻译为 Google；DeepL 仅润色本地缓存；更新安装、模块与 Storage 说明。
+
+## 0.1.6
+
+在线翻译改为 Google，DeepL 仅润色本地缓存
+
+- 在线翻译接口改为 `https://clients5.google.com/translate_a/t`。
+- 移除 DeepL 额度/时长/网络并发计时与限制；Options 仅保留润色密钥。
+- DeepL 只读取本地持久化缓存条目核对润色后写回，不参与首次网络翻译。
+
 ## 0.1.5
 
 修复内容脚本与翻译功能

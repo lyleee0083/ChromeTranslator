@@ -9,32 +9,30 @@ import {
   isClearlyEnglishSourceText,
   isStaleProtectedTermsCacheEntry
 } from './translation-residue-utils.js';
-import { getDeepLTranslateEndpoint, normalizeDeepLConcurrencyLimit } from './deepl-settings.js';
+import {
+  buildGoogleTranslateUrl,
+  parseGoogleTranslateResponse
+} from './google-translate.js';
+import {
+  fetchDeepLTranslatedTexts,
+  isDeepLTargetLanguageSupported
+} from './deepl-translate.js';
 
-export const TRANSLATION_PROVIDER = 'deepl';
-const DEEPL_TRANSLATE_CONCURRENCY = {
-  initial: 2,
-  min: 1,
-  max: 3,
-  increaseAfterSuccessCount: 5
-};
+export { isDeepLTargetLanguageSupported, getDeepLTargetLanguageCode } from './deepl-translate.js';
+export { isGoogleTargetLanguageSupported } from './google-translate.js';
+
+export const NETWORK_TRANSLATION_PROVIDER = 'google';
+export const POLISH_TRANSLATION_PROVIDER = 'deepl';
 export const BATCH_TRANSLATION_CONFIG = {
   maxItems: 20,
   maxChars: 4000,
   minTextLength: 2,
   maxSingleTextLength: 1000
 };
-export const DEEPL_TARGET_LANGUAGE_MAP = {
-  'zh-CN': 'ZH',
-  en: 'EN-US',
-  ja: 'JA',
-  ko: 'KO',
-  es: 'ES',
-  fr: 'FR',
-  de: 'DE',
-  it: 'IT',
-  pt: 'PT-PT',
-  ru: 'RU'
+const NETWORK_TRANSLATE_CONCURRENCY = {
+  initial: 2,
+  min: 1,
+  max: 3
 };
 const CACHE_LOOKUP_CONCURRENCY = {
   min: 4,
@@ -42,78 +40,19 @@ const CACHE_LOOKUP_CONCURRENCY = {
   max: 20
 };
 
-let activeDeepLRequests = 0;
-const queuedDeepLRequests = [];
+let activeNetworkRequests = 0;
+const queuedNetworkRequests = [];
 const inFlightTranslations = new Map();
 const inFlightBatchRequests = new Map();
-let configuredDeepLConcurrencyPolicy = normalizeDeepLConcurrencyLimit();
-let adaptiveDeepLConcurrency = DEEPL_TRANSLATE_CONCURRENCY.initial;
-let consecutiveDeepLSuccessCount = 0;
-
-function syncDeepLConcurrencyPolicy(options = {}) {
-  configuredDeepLConcurrencyPolicy = normalizeDeepLConcurrencyLimit(options.deeplConcurrencyLimit);
-  if (options.isQuotaAlmostUsed) {
-    adaptiveDeepLConcurrency = DEEPL_TRANSLATE_CONCURRENCY.min;
-    return;
-  }
-  if (configuredDeepLConcurrencyPolicy.mode === 'fixed') {
-    adaptiveDeepLConcurrency = configuredDeepLConcurrencyPolicy.max;
-    return;
-  }
-  adaptiveDeepLConcurrency = Math.min(
-    Math.max(adaptiveDeepLConcurrency, DEEPL_TRANSLATE_CONCURRENCY.initial),
-    configuredDeepLConcurrencyPolicy.max
-  );
-}
-
-function getActiveDeepLConcurrencyLimit() {
-  return Math.min(adaptiveDeepLConcurrency, configuredDeepLConcurrencyPolicy.max);
-}
+let networkConcurrency = NETWORK_TRANSLATE_CONCURRENCY.initial;
 
 export function getDefaultSourceLanguage(targetLanguage) {
   return 'auto';
 }
 
-export function getDeepLTargetLanguageCode(targetLanguage) {
-  return DEEPL_TARGET_LANGUAGE_MAP[targetLanguage] || '';
-}
-
-export function isDeepLTargetLanguageSupported(targetLanguage) {
-  return Boolean(getDeepLTargetLanguageCode(targetLanguage));
-}
-
-export function buildDeepLTranslateRequest(sourceTexts, targetLanguage, apiKey, options = {}) {
-  const text = Array.isArray(sourceTexts) ? sourceTexts : [sourceTexts];
-  const targetLang = getDeepLTargetLanguageCode(targetLanguage);
-  if (!targetLang) {
-    throw new Error(`DeepL target language is not supported: ${targetLanguage}`);
-  }
-
-  const body = {
-    text,
-    target_lang: targetLang
-  };
-  if (options.sourceLang) {
-    body.source_lang = options.sourceLang;
-  }
-
-  return {
-    url: getDeepLTranslateEndpoint(apiKey),
-    init: {
-      method: 'POST',
-      headers: {
-        'Authorization': `DeepL-Auth-Key ${apiKey}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(body)
-    }
-  };
-}
-
 export function buildTranslationCacheKey(sourceText, sourceLanguage, targetLanguage) {
   return [
     'translation',
-    TRANSLATION_PROVIDER,
     encodeURIComponent(targetLanguage || 'unknown'),
     encodeURIComponent(sourceLanguage || 'auto'),
     hashSourceText(normalizeSourceText(sourceText))
@@ -136,6 +75,10 @@ export function hasResidualKoreanText(text) {
   return /[\uac00-\ud7af]/.test(String(text || ''));
 }
 
+export function isTranslationTargetLanguageSupported(targetLanguage) {
+  return isDeepLTargetLanguageSupported(targetLanguage);
+}
+
 export async function translateText(sourceText, targetLanguage, options = {}) {
   const language = getLanguageByCode(targetLanguage);
   const normalizedSource = normalizeSourceText(sourceText);
@@ -152,7 +95,6 @@ export async function translateText(sourceText, targetLanguage, options = {}) {
   const cache = options.cache;
   const userProtectedTerms = options.userProtectedTerms || [];
   const useTermsAsMerged = options.useProtectedTermsAsMerged === true;
-  syncDeepLConcurrencyPolicy(options);
   const cacheKey = buildTranslationCacheKey(normalizedSource, sourceLanguage, language.code);
   const protectOptions = {
     useTermsAsMerged,
@@ -166,7 +108,14 @@ export async function translateText(sourceText, targetLanguage, options = {}) {
   if (cache?.has?.(cacheKey)) {
     const cachedText = normalizeTranslatedText(readCachedTranslatedText(cache.get(cacheKey)), language.code);
     if (cachedText && !hasResidualKoreanText(cachedText)) {
-      writeTranslationCacheEntry(cache, cacheKey, normalizedSource, sourceLanguage, language.code, cachedText);
+      writeTranslationCacheEntry(cache, cacheKey, normalizedSource, sourceLanguage, language.code, cachedText, readCacheProvider(cache.get(cacheKey)));
+      scheduleDeepLPolishFromLocalCache(cacheKey, normalizedSource, sourceLanguage, language.code, {
+        fetchImpl,
+        apiKey,
+        cache,
+        localCache,
+        priority: options.priority
+      });
       return buildTranslationResult(normalizedSource, cachedText, language, 'cache');
     }
   }
@@ -174,14 +123,21 @@ export async function translateText(sourceText, targetLanguage, options = {}) {
   if (localCache?.has?.(cacheKey)) {
     const cachedText = normalizeTranslatedText(readCachedTranslatedText(localCache.get(cacheKey)), language.code);
     if (cachedText && !hasResidualKoreanText(cachedText)) {
-      writeTranslationCacheEntry(localCache, cacheKey, normalizedSource, sourceLanguage, language.code, cachedText);
-      writeTranslationCacheEntry(cache, cacheKey, normalizedSource, sourceLanguage, language.code, cachedText);
+      writeTranslationCacheEntry(localCache, cacheKey, normalizedSource, sourceLanguage, language.code, cachedText, readCacheProvider(localCache.get(cacheKey)));
+      writeTranslationCacheEntry(cache, cacheKey, normalizedSource, sourceLanguage, language.code, cachedText, readCacheProvider(localCache.get(cacheKey)));
+      scheduleDeepLPolishFromLocalCache(cacheKey, normalizedSource, sourceLanguage, language.code, {
+        fetchImpl,
+        apiKey,
+        cache,
+        localCache,
+        priority: options.priority
+      });
       return buildTranslationResult(normalizedSource, cachedText, language, 'cache');
     }
   }
 
   try {
-    if (!networkEnabled || !apiKey) {
+    if (!networkEnabled) {
       return buildTranslationResult(
         normalizedSource,
         normalizedSource,
@@ -189,10 +145,6 @@ export async function translateText(sourceText, targetLanguage, options = {}) {
         'original',
         'cache_miss_network_disabled'
       );
-    }
-
-    if (!apiKey) {
-      throw new Error('DeepL API key is missing.');
     }
 
     const protectedResult = protectTermsInText(normalizedSource, userProtectedTerms, protectOptions);
@@ -203,14 +155,13 @@ export async function translateText(sourceText, targetLanguage, options = {}) {
     let translatedText = await translateWithInFlightDedup(
       cacheKey,
       fetchImpl,
-      apiKey,
       protectedResult.text,
       protectedResult.placeholders,
       options.priority,
       language.code
     );
     if (!translatedText) {
-      throw new Error('DeepL translate endpoint response did not include translated text.');
+      throw new Error('Google translate endpoint response did not include translated text.');
     }
 
     translatedText = normalizeTranslatedText(translatedText, language.code);
@@ -219,15 +170,33 @@ export async function translateText(sourceText, targetLanguage, options = {}) {
       translatedText,
       languageCode: language.code,
       fetchImpl,
-      apiKey,
       priority: options.priority,
       enableRetry: options.enableChineseResidueRetry === true,
       userProtectedTerms: options.userProtectedTermsForRetry || []
     });
 
-    writeTranslationCacheEntry(cache, cacheKey, normalizedSource, sourceLanguage, language.code, translatedText);
-    writeTranslationCacheEntry(localCache, cacheKey, normalizedSource, sourceLanguage, language.code, translatedText);
-    return buildTranslationResult(normalizedSource, translatedText, language, 'network');
+    writeTranslationCacheEntry(cache, cacheKey, normalizedSource, sourceLanguage, language.code, translatedText, NETWORK_TRANSLATION_PROVIDER);
+    writeTranslationCacheEntry(localCache, cacheKey, normalizedSource, sourceLanguage, language.code, translatedText, NETWORK_TRANSLATION_PROVIDER);
+
+    const polishedText = await polishLocalPersistentCacheEntry(cacheKey, normalizedSource, sourceLanguage, language.code, {
+      fetchImpl,
+      apiKey,
+      cache,
+      localCache,
+      priority: options.priority
+    });
+    if (polishedText) {
+      translatedText = polishedText;
+    }
+
+    return buildTranslationResult(
+      normalizedSource,
+      translatedText,
+      language,
+      'network',
+      '',
+      polishedText ? POLISH_TRANSLATION_PROVIDER : NETWORK_TRANSLATION_PROVIDER
+    );
   } catch {
     return buildTranslationResult(
       normalizedSource,
@@ -249,7 +218,6 @@ export async function translateTextBatch(sourceTexts, targetLanguage, options = 
   const networkEnabled = options.networkEnabled !== false;
   const userProtectedTerms = options.userProtectedTerms || [];
   const useTermsAsMerged = options.useProtectedTermsAsMerged === true;
-  syncDeepLConcurrencyPolicy(options);
   const normalizedTexts = normalizeBatchSourceTexts(sourceTexts);
   const results = new Array(normalizedTexts.length).fill(null);
   const missingItems = [];
@@ -275,7 +243,14 @@ export async function translateTextBatch(sourceTexts, targetLanguage, options = 
       ? normalizeTranslatedText(readCachedTranslatedText(cache.get(cacheKey)), language.code)
       : '';
     if (activeText && !hasResidualKoreanText(activeText)) {
-      writeTranslationCacheEntry(cache, cacheKey, sourceText, sourceLanguage, language.code, activeText);
+      writeTranslationCacheEntry(cache, cacheKey, sourceText, sourceLanguage, language.code, activeText, readCacheProvider(cache.get(cacheKey)));
+      scheduleDeepLPolishFromLocalCache(cacheKey, sourceText, sourceLanguage, language.code, {
+        fetchImpl,
+        apiKey,
+        cache,
+        localCache,
+        priority: options.priority
+      });
       results[index] = buildTranslationResult(sourceText, activeText, language, 'cache');
       return;
     }
@@ -284,8 +259,15 @@ export async function translateTextBatch(sourceTexts, targetLanguage, options = 
       ? normalizeTranslatedText(readCachedTranslatedText(localCache.get(cacheKey)), language.code)
       : '';
     if (localText && !hasResidualKoreanText(localText)) {
-      writeTranslationCacheEntry(cache, cacheKey, sourceText, sourceLanguage, language.code, localText);
-      writeTranslationCacheEntry(localCache, cacheKey, sourceText, sourceLanguage, language.code, localText);
+      writeTranslationCacheEntry(cache, cacheKey, sourceText, sourceLanguage, language.code, localText, readCacheProvider(localCache.get(cacheKey)));
+      writeTranslationCacheEntry(localCache, cacheKey, sourceText, sourceLanguage, language.code, localText, readCacheProvider(localCache.get(cacheKey)));
+      scheduleDeepLPolishFromLocalCache(cacheKey, sourceText, sourceLanguage, language.code, {
+        fetchImpl,
+        apiKey,
+        cache,
+        localCache,
+        priority: options.priority
+      });
       results[index] = buildTranslationResult(sourceText, localText, language, 'cache');
       return;
     }
@@ -298,7 +280,7 @@ export async function translateTextBatch(sourceTexts, targetLanguage, options = 
     });
   });
 
-  if (!networkEnabled || !apiKey) {
+  if (!networkEnabled) {
     missingItems.forEach((item) => {
       results[item.index] = buildTranslationResult(
         item.sourceText,
@@ -318,19 +300,17 @@ export async function translateTextBatch(sourceTexts, targetLanguage, options = 
     cache,
     localCache,
     apiKey,
-    networkEnabled,
     priority: options.priority,
     enableChineseResidueRetry: options.enableChineseResidueRetry === true,
     userProtectedTermsForRetry: options.userProtectedTermsForRetry || [],
     userProtectedTerms,
     language
   };
-  const parallelism = options.isQuotaAlmostUsed
-    ? DEEPL_TRANSLATE_CONCURRENCY.min
-    : getActiveDeepLConcurrencyLimit();
 
-  await runWithConcurrencyLimit(groupedItems, parallelism, (group) =>
-    processMissingTranslationGroup(group, results, batchOptions)
+  await runWithConcurrencyLimit(
+    groupedItems,
+    options.isPageHidden ? NETWORK_TRANSLATE_CONCURRENCY.min : networkConcurrency,
+    (group) => processMissingTranslationGroup(group, results, batchOptions)
   );
 
   return results;
@@ -343,7 +323,6 @@ async function processMissingTranslationGroup(group, results, batchOptions) {
     cache,
     localCache,
     apiKey,
-    networkEnabled,
     priority,
     enableChineseResidueRetry,
     userProtectedTermsForRetry,
@@ -369,7 +348,7 @@ async function processMissingTranslationGroup(group, results, batchOptions) {
   const translatedTexts = await translateBatchGroupWithFallback(
     maskedGroup.map((item) => item.maskedText),
     language.code,
-    { fetchImpl, sourceLanguage, cache, localCache, apiKey, networkEnabled, priority }
+    { fetchImpl, priority }
   );
 
   for (let groupIndex = 0; groupIndex < maskedGroup.length; groupIndex += 1) {
@@ -383,7 +362,6 @@ async function processMissingTranslationGroup(group, results, batchOptions) {
       translatedText,
       languageCode: language.code,
       fetchImpl,
-      apiKey,
       priority,
       enableRetry: enableChineseResidueRetry,
       userProtectedTerms: userProtectedTermsForRetry
@@ -399,9 +377,28 @@ async function processMissingTranslationGroup(group, results, batchOptions) {
       continue;
     }
 
-    writeTranslationCacheEntry(cache, item.cacheKey, item.sourceText, sourceLanguage, language.code, translatedText);
-    writeTranslationCacheEntry(localCache, item.cacheKey, item.sourceText, sourceLanguage, language.code, translatedText);
-    results[item.index] = buildTranslationResult(item.sourceText, translatedText, language, 'network');
+    writeTranslationCacheEntry(cache, item.cacheKey, item.sourceText, sourceLanguage, language.code, translatedText, NETWORK_TRANSLATION_PROVIDER);
+    writeTranslationCacheEntry(localCache, item.cacheKey, item.sourceText, sourceLanguage, language.code, translatedText, NETWORK_TRANSLATION_PROVIDER);
+
+    const polishedText = await polishLocalPersistentCacheEntry(item.cacheKey, item.sourceText, sourceLanguage, language.code, {
+      fetchImpl,
+      apiKey,
+      cache,
+      localCache,
+      priority
+    });
+    if (polishedText) {
+      translatedText = polishedText;
+    }
+
+    results[item.index] = buildTranslationResult(
+      item.sourceText,
+      translatedText,
+      language,
+      'network',
+      '',
+      polishedText ? POLISH_TRANSLATION_PROVIDER : NETWORK_TRANSLATION_PROVIDER
+    );
   }
 }
 
@@ -421,12 +418,12 @@ async function runWithConcurrencyLimit(items, limit, worker) {
   }));
 }
 
-function translateWithInFlightDedup(cacheKey, fetchImpl, apiKey, sourceText, placeholders, priority, targetLanguage) {
+function translateWithInFlightDedup(cacheKey, fetchImpl, sourceText, placeholders, priority, targetLanguage) {
   if (inFlightTranslations.has(cacheKey)) {
     return inFlightTranslations.get(cacheKey);
   }
 
-  const promise = fetchTranslatedTextBatch(fetchImpl, [sourceText], targetLanguage, apiKey, priority)
+  const promise = fetchTranslatedTextBatch(fetchImpl, [sourceText], targetLanguage, priority)
     .then((translatedTexts) => restoreProtectedTerms(translatedTexts[0] || '', placeholders))
     .finally(() => {
       inFlightTranslations.delete(cacheKey);
@@ -441,19 +438,10 @@ async function translateBatchGroupWithFallback(sourceTexts, targetLanguage, opti
   }
 
   try {
-    if (options.networkEnabled === false || !options.apiKey) {
-      return sourceTexts;
-    }
-
-    if (!options.apiKey) {
-      throw new Error('DeepL API key is missing.');
-    }
-
     return await fetchTranslatedTextBatch(
       options.fetchImpl,
       sourceTexts,
       targetLanguage,
-      options.apiKey,
       options.priority
     );
   } catch {
@@ -472,7 +460,11 @@ async function translateBatchGroupWithFallback(sourceTexts, targetLanguage, opti
       return [...left, ...right];
     }
 
-    const result = await translateText(sourceTexts[0], targetLanguage, options);
+    const result = await translateText(sourceTexts[0], targetLanguage, {
+      fetchImpl: options.fetchImpl,
+      networkEnabled: true,
+      priority: options.priority
+    });
     if (result.source === 'original' || result.source === 'protected') {
       return [''];
     }
@@ -481,38 +473,27 @@ async function translateBatchGroupWithFallback(sourceTexts, targetLanguage, opti
   }
 }
 
-function buildBatchRequestKey(targetLanguage, sourceTexts, requestOptions = {}) {
-  return [
-    targetLanguage,
-    requestOptions.sourceLang || '',
-    sourceTexts.join('\u0002')
-  ].join('\u0001');
+function buildBatchRequestKey(targetLanguage, sourceTexts) {
+  return [targetLanguage, sourceTexts.join('\u0002')].join('\u0001');
 }
 
-async function fetchTranslatedTextBatch(
-  fetchImpl,
-  sourceTexts,
-  targetLanguage,
-  apiKey,
-  priority = 5,
-  requestOptions = {}
-) {
-  const batchKey = buildBatchRequestKey(targetLanguage, sourceTexts, requestOptions);
+async function fetchTranslatedTextBatch(fetchImpl, sourceTexts, targetLanguage, priority = 5) {
+  const batchKey = buildBatchRequestKey(targetLanguage, sourceTexts);
   if (inFlightBatchRequests.has(batchKey)) {
     return inFlightBatchRequests.get(batchKey);
   }
 
   const promise = (async () => {
-    const request = buildDeepLTranslateRequest(sourceTexts, targetLanguage, apiKey, requestOptions);
-    const response = await enqueueDeepLRequest(() => fetchImpl(request.url, request.init), priority);
+    const url = buildGoogleTranslateUrl(sourceTexts, targetLanguage);
+    const response = await enqueueNetworkRequest(() => fetchImpl(url), priority);
     if (!response.ok) {
-      markDeepLRequestFailure();
-      throw new Error(`DeepL translate endpoint responded with HTTP ${response.status}`);
+      markNetworkRequestFailure();
+      throw new Error(`Google translate endpoint responded with HTTP ${response.status}`);
     }
 
     const data = await response.json();
-    markDeepLRequestSuccess();
-    return parseDeepLTranslateResponse(data, sourceTexts.length)
+    markNetworkRequestSuccess();
+    return parseGoogleTranslateResponse(data, sourceTexts.length)
       .map((text) => normalizeTranslatedText(text, targetLanguage));
   })().finally(() => {
     inFlightBatchRequests.delete(batchKey);
@@ -522,71 +503,113 @@ async function fetchTranslatedTextBatch(
   return promise;
 }
 
-function enqueueDeepLRequest(task, priority = 5) {
+function enqueueNetworkRequest(task, priority = 5) {
   return new Promise((resolve, reject) => {
-    queuedDeepLRequests.push({ task, resolve, reject, priority: Number.isFinite(priority) ? priority : 5 });
-    processDeepLRequestQueue();
+    queuedNetworkRequests.push({ task, resolve, reject, priority: Number.isFinite(priority) ? priority : 5 });
+    processNetworkRequestQueue();
   });
 }
 
-function processDeepLRequestQueue() {
-  while (activeDeepLRequests < getActiveDeepLConcurrencyLimit() && queuedDeepLRequests.length > 0) {
-    const nextIndex = getNextDeepLQueuedRequestIndex();
-    const [queuedRequest] = queuedDeepLRequests.splice(nextIndex, 1);
-    activeDeepLRequests += 1;
+function processNetworkRequestQueue() {
+  while (activeNetworkRequests < networkConcurrency && queuedNetworkRequests.length > 0) {
+    const nextIndex = getNextQueuedNetworkRequestIndex();
+    const [queuedRequest] = queuedNetworkRequests.splice(nextIndex, 1);
+    activeNetworkRequests += 1;
 
     Promise.resolve()
       .then(queuedRequest.task)
       .then(queuedRequest.resolve, queuedRequest.reject)
       .finally(() => {
-        activeDeepLRequests -= 1;
-        processDeepLRequestQueue();
+        activeNetworkRequests -= 1;
+        processNetworkRequestQueue();
       });
   }
 }
 
-function getNextDeepLQueuedRequestIndex() {
+function getNextQueuedNetworkRequestIndex() {
   let selectedIndex = 0;
-  for (let index = 1; index < queuedDeepLRequests.length; index += 1) {
-    if (queuedDeepLRequests[index].priority < queuedDeepLRequests[selectedIndex].priority) {
+  for (let index = 1; index < queuedNetworkRequests.length; index += 1) {
+    if (queuedNetworkRequests[index].priority < queuedNetworkRequests[selectedIndex].priority) {
       selectedIndex = index;
     }
   }
   return selectedIndex;
 }
 
-function markDeepLRequestSuccess() {
-  if (configuredDeepLConcurrencyPolicy.mode !== 'adaptive') {
+function markNetworkRequestSuccess() {
+  networkConcurrency = Math.min(networkConcurrency + 1, NETWORK_TRANSLATE_CONCURRENCY.max);
+}
+
+function markNetworkRequestFailure() {
+  networkConcurrency = NETWORK_TRANSLATE_CONCURRENCY.min;
+}
+
+const polishInFlight = new Map();
+
+function scheduleDeepLPolishFromLocalCache(cacheKey, sourceText, sourceLanguage, targetLanguage, options) {
+  if (!options.apiKey || !options.localCache?.has?.(cacheKey)) {
     return;
   }
 
-  consecutiveDeepLSuccessCount += 1;
-  if (
-    consecutiveDeepLSuccessCount >= DEEPL_TRANSLATE_CONCURRENCY.increaseAfterSuccessCount &&
-    adaptiveDeepLConcurrency < configuredDeepLConcurrencyPolicy.max
-  ) {
-    adaptiveDeepLConcurrency += 1;
-    consecutiveDeepLSuccessCount = 0;
+  if (polishInFlight.has(cacheKey)) {
+    return;
+  }
+
+  const promise = polishLocalPersistentCacheEntry(cacheKey, sourceText, sourceLanguage, targetLanguage, options)
+    .catch(() => null)
+    .finally(() => {
+      polishInFlight.delete(cacheKey);
+    });
+  polishInFlight.set(cacheKey, promise);
+}
+
+async function polishLocalPersistentCacheEntry(cacheKey, sourceText, sourceLanguage, targetLanguage, options) {
+  const apiKey = String(options.apiKey || '').trim();
+  const localCache = options.localCache;
+  if (!apiKey || !localCache?.has?.(cacheKey)) {
+    return '';
+  }
+
+  const cachedEntry = localCache.get(cacheKey);
+  const cachedText = normalizeTranslatedText(readCachedTranslatedText(cachedEntry), targetLanguage);
+  if (!cachedText) {
+    return '';
+  }
+
+  if (readCacheProvider(cachedEntry) === POLISH_TRANSLATION_PROVIDER) {
+    return cachedText;
+  }
+
+  const normalizedSource = normalizeSourceText(sourceText);
+  if (!normalizedSource) {
+    return '';
+  }
+
+  try {
+    const requestOptions = isClearlyEnglishSourceText(normalizedSource)
+      ? { sourceLang: 'EN' }
+      : {};
+    const polishedTexts = await fetchDeepLTranslatedTexts(
+      options.fetchImpl || fetch,
+      [normalizedSource],
+      targetLanguage,
+      apiKey,
+      requestOptions
+    );
+    const polishedText = normalizeTranslatedText(polishedTexts[0] || '', targetLanguage);
+    if (!polishedText || polishedText === cachedText) {
+      return cachedText;
+    }
+
+    writeTranslationCacheEntry(options.cache, cacheKey, normalizedSource, sourceLanguage, targetLanguage, polishedText, POLISH_TRANSLATION_PROVIDER);
+    writeTranslationCacheEntry(localCache, cacheKey, normalizedSource, sourceLanguage, targetLanguage, polishedText, POLISH_TRANSLATION_PROVIDER);
+    return polishedText;
+  } catch {
+    return cachedText;
   }
 }
 
-function markDeepLRequestFailure() {
-  consecutiveDeepLSuccessCount = 0;
-  if (configuredDeepLConcurrencyPolicy.mode === 'adaptive') {
-    adaptiveDeepLConcurrency = DEEPL_TRANSLATE_CONCURRENCY.min;
-  }
-}
-
-export function parseDeepLTranslateResponse(data, expectedLength) {
-  const translations = data?.translations;
-  if (!Array.isArray(translations) || translations.length !== expectedLength) {
-    throw new Error('DeepL response length did not match the request.');
-  }
-
-  return translations.map((translation) => String(translation?.text || '').trim());
-}
-
-function buildTranslationResult(sourceText, translatedText, language, source = '', reason = '') {
+function buildTranslationResult(sourceText, translatedText, language, source = '', reason = '', provider = '') {
   const result = {
     sourceText,
     translatedText,
@@ -598,6 +621,9 @@ function buildTranslationResult(sourceText, translatedText, language, source = '
   }
   if (reason) {
     result.reason = reason;
+  }
+  if (provider) {
+    result.provider = provider;
   }
 
   return result;
@@ -664,11 +690,11 @@ function readCachedTranslatedText(value) {
     return '';
   }
 
-  if (value?.provider && value.provider !== TRANSLATION_PROVIDER) {
-    return '';
-  }
-
   return typeof value?.translatedText === 'string' ? value.translatedText : '';
+}
+
+function readCacheProvider(value) {
+  return typeof value?.provider === 'string' ? value.provider : '';
 }
 
 async function maybeRetryChineseResidueTranslation({
@@ -676,7 +702,6 @@ async function maybeRetryChineseResidueTranslation({
   translatedText,
   languageCode,
   fetchImpl,
-  apiKey,
   priority,
   enableRetry,
   userProtectedTerms
@@ -688,16 +713,11 @@ async function maybeRetryChineseResidueTranslation({
   const userOnlyProtected = protectTermsInText(normalizedSource, userProtectedTerms, {
     useTermsAsMerged: true
   });
-  const requestOptions = isClearlyEnglishSourceText(normalizedSource)
-    ? { sourceLang: 'EN' }
-    : {};
   const retryTexts = await fetchTranslatedTextBatch(
     fetchImpl,
     [userOnlyProtected.text],
     languageCode,
-    apiKey,
-    priority,
-    requestOptions
+    priority
   );
   const retryTranslated = normalizeTranslatedText(
     restoreProtectedTerms(retryTexts[0] || '', userOnlyProtected.placeholders),
@@ -714,7 +734,7 @@ async function maybeRetryChineseResidueTranslation({
   return translatedText;
 }
 
-function writeTranslationCacheEntry(cache, cacheKey, sourceText, sourceLanguage, targetLanguage, translatedText) {
+function writeTranslationCacheEntry(cache, cacheKey, sourceText, sourceLanguage, targetLanguage, translatedText, provider) {
   if (!cache?.set) {
     return;
   }
@@ -723,7 +743,7 @@ function writeTranslationCacheEntry(cache, cacheKey, sourceText, sourceLanguage,
   const now = Date.now();
   const hitCount = typeof existing?.hitCount === 'number' ? existing.hitCount + 1 : 1;
   cache.set(cacheKey, {
-    provider: TRANSLATION_PROVIDER,
+    provider,
     sourceLanguage,
     targetLanguage,
     sourceHash: cacheKey.split(':').pop(),

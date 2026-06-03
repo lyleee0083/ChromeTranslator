@@ -17,6 +17,8 @@ export const RUNTIME_FILES = [
   'translation-residue-utils.js',
   'translation-cache.js',
   'translator.js',
+  'google-translate.js',
+  'deepl-translate.js',
   'webpage-translation.js',
   'youtube-subtitles.js'
 ];

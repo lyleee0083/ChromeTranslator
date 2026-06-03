@@ -9,14 +9,15 @@
 3. **Git 提交**：先写好 `CHANGLOG.md` 再提交。首次在本机克隆后执行一次 `npm run install-hooks`；之后用 `git commit`（自动填入说明）或 `npm run commit`（直接用说明提交，可跟 `-- path` 等参数）。
 4. **自我审查**：删除与当前功能无关的代码、注释、文件；不保留测试目录/测试脚本；不保留构建残留（`dist/` 仅由 `npm run package` 生成）；不保留旧版迁移/兼容逻辑。
 5. **更新本文档**：只写仓库里**已实现**的功能、文件、配置与常量；不写计划、不写未实现能力、不写「不支持 xxx」类说明。
-6. **内容脚本打包**：修改 `content.js` 或其依赖后，`npm run package` / `npm run sync-install` 会自动执行 `npm run build:content`，生成 `content.bundle.js`（manifest 注入此文件，不用 ES module）。
-7. **核对打包清单**：新增或删除运行时 `.js` / `.html` 时，同步修改 `scripts/extension-runtime-files.mjs` 的 `RUNTIME_FILES`。
-8. **打包验证**：执行 `npm run package`，确认 zip 可加载。
-9. **同步 Chrome 安装目录**：执行 `npm run sync-install`，将运行时文件覆盖到 `D:\Chrome Translator`（本机已解压扩展目录）；在 `chrome://extensions` 点重新加载。此步骤为部署动作，**不要**写入 `CHANGLOG.md`。
+6. **同步 README**：修改 `DEVELOPMENT.md` 时，将其中**已实现**的对外说明同步到 `README.md`（功能、安装、文件、模块、语言、Storage 等）；**不要**把「每次改动后（必读）」及维护流程写入 README。此步骤为文档同步，**不要**写入 `CHANGLOG.md`。
+7. **内容脚本打包**：修改 `content.js` 或其依赖后，`npm run package` / `npm run sync-install` 会自动执行 `npm run build:content`，生成 `content.bundle.js`（manifest 注入此文件，不用 ES module）。
+8. **核对打包清单**：新增或删除运行时 `.js` / `.html` 时，同步修改 `scripts/extension-runtime-files.mjs` 的 `RUNTIME_FILES`。
+9. **打包验证**：执行 `npm run package`，确认 zip 可加载。
+10. **同步 Chrome 安装目录**：执行 `npm run sync-install`，将运行时文件覆盖到 `D:\Chrome Translator`（本机已解压扩展目录）；在 `chrome://extensions` 点重新加载。此步骤为部署动作，**不要**写入 `CHANGLOG.md`。
 
 ---
 
-版本 0.1.5 · Manifest V3 Chrome 扩展 · DeepL API
+版本 0.1.7 · Manifest V3 Chrome 扩展 · Google 翻译 + DeepL 润色
 
 ## 功能
 
@@ -24,7 +25,7 @@
 - YouTube 字幕翻译（`.ytp-caption-segment` + `captionTracks` 预取）
 - 保护词（默认词库 + 用户词库，占位符 masking）
 - 多级翻译缓存（页内内存 → session → 本地持久）
-- 域名排除、DeepL 密钥与额度/时长/网络并发
+- 域名排除、Google 在线翻译、DeepL 本地缓存润色密钥
 - Popup、Options、右键菜单
 
 ## 文件
@@ -36,6 +37,8 @@ content.js              # 源码；运行时注入 content.bundle.js
 content.bundle.js       # build:content 生成
 content.css
 translator.js
+google-translate.js
+deepl-translate.js
 deepl-settings.js
 domain-settings.js
 language-options.js
@@ -65,16 +68,18 @@ CHANGLOG.md
 DEVELOPMENT.md
 ```
 
-打包：`npm run package` → `dist/package/ChromeTranslator/`、`dist/ChromeTranslator-0.1.5.zip`
+打包：`npm run package` → `dist/package/ChromeTranslator/`、`dist/ChromeTranslator-0.1.7.zip`
 
 ## 模块
 
 | 文件 | 职责 |
 | --- | --- |
-| `background.js` | 消息队列、缓存、DeepL 调度、右键菜单 |
+| `background.js` | 消息队列、缓存、翻译调度、右键菜单 |
 | `content.js` | 整页扫描翻译、YouTube 字幕叠加 |
-| `translator.js` | 缓存查找、DeepL 单条/批请求、并发控制 |
-| `deepl-settings.js` | API 密钥、额度、时长、并发、Free/Pro 端点 |
+| `translator.js` | 缓存查找、Google 在线翻译、DeepL 润色写回 |
+| `google-translate.js` | `clients5.google.com/translate_a/t` 请求与解析 |
+| `deepl-translate.js` | DeepL 润色请求（仅配合本地持久缓存） |
+| `deepl-settings.js` | DeepL 润色 API 密钥 |
 | `domain-settings.js` | 排除域名 |
 | `language-options.js` | 目标语言 |
 | `protected-terms.js` | 保护词匹配、预编译 protector |
@@ -91,13 +96,13 @@ DEVELOPMENT.md
 
 `zh-CN`（默认）、`en`、`ja`、`ko`、`es`、`fr`、`de` — 见 `language-options.js`
 
-DeepL `target_lang` 映射见 `translator.js` → `DEEPL_TARGET_LANGUAGE_MAP`
+Google `tl` 映射见 `google-translate.js`；DeepL `target_lang` 见 `deepl-translate.js`
 
 ## Storage
 
 **sync**：`targetLanguage`、`webpageTranslationEnabled`、`youtubeSubtitleTranslationEnabled`、`excludedTranslationHosts`
 
-**local**：`deeplApiKey` 等（`deepl-settings.js`）、`deeplConcurrencyLimit`（`adaptive`/`1`/`2`/`3`）、`userProtectedTerms`、`localTranslationCache:<lang>`、`localTranslationCacheDirectory`、`sessionTranslationCache:<tabId>`、`autoCacheCleanupEnabled`
+**local**：`deeplApiKey`（`deepl-settings.js`，仅润色）、`userProtectedTerms`、`localTranslationCache:<lang>`、`localTranslationCacheDirectory`、`sessionTranslationCache:<tabId>`、`autoCacheCleanupEnabled`
 
 ## 翻译 `source`
 
@@ -106,7 +111,7 @@ DeepL `target_lang` 映射见 `translator.js` → `DEEPL_TARGET_LANGUAGE_MAP`
 | `cache` | 缓存命中 |
 | `protected` | 全文保护词 |
 | `original` | 返回原文 |
-| `network` | DeepL 成功 |
+| `network` | Google 在线翻译成功（可能已 DeepL 润色写回缓存） |
 
 `protected`、`original` 不写入持久缓存。
 
@@ -116,7 +121,7 @@ DeepL `target_lang` 映射见 `translator.js` → `DEEPL_TARGET_LANGUAGE_MAP`
 | --- | --- |
 | `PROTECTED_TERMS_VERSION` | 4 |
 | 翻译任务并发 | 10 |
-| DeepL HTTP 并发 | 1–3（Options 可选；自适应失败降 1；额度将尽降 1） |
+| Google HTTP 并发 | 1–3（自适应，失败降至 1） |
 | 批处理上限 | 20 条 / 4000 字符 |
 | 整页空闲扫描 | 250 节点/批 |
 | YouTube 预取批 | 20 |
@@ -129,8 +134,8 @@ DeepL `target_lang` 映射见 `translator.js` → `DEEPL_TARGET_LANGUAGE_MAP`
 - 缓存命中跳过保护词正则
 - 保护词 `buildMergedTermsProtector` 预编译与缓存
 - 整页 DOM 扫描使用 `requestIdleCallback`
-- DeepL 批请求并行、in-flight 去重
-- Free 密钥 → `api-free.deepl.com`；Pro → `api.deepl.com`
+- Google 批请求并行、in-flight 去重
+- DeepL 仅对已有本地持久缓存条目润色；Free/Pro 密钥决定 `api-free.deepl.com` / `api.deepl.com`
 
 ## 命令
 

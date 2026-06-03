@@ -146,45 +146,11 @@
     <main>
       <h1>Chrome Translator 设置</h1>
       <section>
-        <h2>DeepL 密钥设置</h2>
+        <h2>DeepL 润色密钥</h2>
         <label for="deeplApiKey">DeepL API Key</label>
-        <input id="deeplApiKey" type="password" placeholder="请输入 DeepL API Key" autocomplete="off" spellcheck="false">
-        <div class="limit-grid">
-          <div>
-            <label for="deeplQuotaMode">翻译额度</label>
-            <select id="deeplQuotaMode">
-              <option value="custom">自定义</option>
-              <option value="infinite">∞</option>
-            </select>
-          </div>
-          <div>
-            <label for="deeplQuotaLimitK">额度（k）</label>
-            <input id="deeplQuotaLimitK" type="number" min="1" step="1" value="500">
-          </div>
-          <div>
-            <label for="deeplDurationMode">密钥时长</label>
-            <select id="deeplDurationMode">
-              <option value="custom">自定义</option>
-              <option value="infinite">∞</option>
-            </select>
-          </div>
-          <div>
-            <label for="deeplDurationLimitDays">时长（day）</label>
-            <input id="deeplDurationLimitDays" type="number" min="1" step="1" value="30">
-          </div>
-          <div>
-            <label for="deeplConcurrencyLimit">网络并发</label>
-            <select id="deeplConcurrencyLimit">
-              <option value="adaptive">自适应（推荐）</option>
-              <option value="1">1</option>
-              <option value="2">2</option>
-              <option value="3">3</option>
-            </select>
-          </div>
-        </div>
+        <input id="deeplApiKey" type="password" placeholder="用于本地持久化缓存核对润色" autocomplete="off" spellcheck="false">
         <p id="deeplKeyStatus" class="status-line" aria-live="polite"></p>
-        <p class="hint">请妥善保管你的 DeepL 密钥。密钥将保存在本地浏览器中。∞ 表示该项不限制。</p>
-        <p class="hint">网络并发：同时发送到 DeepL 的请求数。越高越快，但更容易触发限速；自适应会在失败时自动降并发。</p>
+        <p class="hint">在线翻译使用 Google 接口。DeepL 仅读取本地持久化缓存条目进行核对润色后写回，不参与首次网络翻译。</p>
         <button id="saveDeepLApiKey" type="button">保存密钥</button>
       </section>
       <section>

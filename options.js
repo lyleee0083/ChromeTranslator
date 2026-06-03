@@ -1,4 +1,4 @@
-import {
+﻿import {
   DEFAULT_EXCLUDED_TRANSLATION_HOSTS,
   EXCLUDED_TRANSLATION_HOSTS_STORAGE_KEY,
   isPrivateTranslationHostname,
@@ -6,19 +6,9 @@ import {
   normalizeTranslationHostname
 } from './domain-settings.js';
 import {
-  DEEPL_DURATION_LIMIT_DAYS_STORAGE_KEY,
-  DEEPL_DURATION_MODE_STORAGE_KEY,
-  DEEPL_LIMIT_MODE,
-  DEEPL_QUOTA_LIMIT_K_STORAGE_KEY,
-  DEEPL_QUOTA_MODE_STORAGE_KEY,
-  DEFAULT_DEEPL_DURATION_LIMIT_DAYS,
-  DEFAULT_DEEPL_QUOTA_LIMIT_K,
-  DEEPL_CONCURRENCY_LIMIT_STORAGE_KEY,
-  DEFAULT_DEEPL_CONCURRENCY_LIMIT,
   buildDeepLKeyStoragePayload,
   formatDeepLKeyStatusText,
-  getDefaultDeepLSettings,
-  normalizeDeepLConcurrencyLimit
+  getDefaultDeepLSettings
 } from './deepl-settings.js';
 import {
   USER_PROTECTED_TERMS_STORAGE_KEY,
@@ -31,11 +21,6 @@ import {
 const deeplApiKeyInput = document.getElementById('deeplApiKey');
 const deeplKeyStatus = document.getElementById('deeplKeyStatus');
 const saveDeepLApiKeyButton = document.getElementById('saveDeepLApiKey');
-const deeplQuotaModeInput = document.getElementById('deeplQuotaMode');
-const deeplQuotaLimitKInput = document.getElementById('deeplQuotaLimitK');
-const deeplDurationModeInput = document.getElementById('deeplDurationMode');
-const deeplDurationLimitDaysInput = document.getElementById('deeplDurationLimitDays');
-const deeplConcurrencyLimitInput = document.getElementById('deeplConcurrencyLimit');
 const excludedTranslationHostsSearchInput = document.getElementById('excludedTranslationHostsSearch');
 const excludedTranslationHostsSearchResult = document.getElementById('excludedTranslationHostsSearchResult');
 const excludedTranslationHostsInput = document.getElementById('excludedTranslationHosts');
@@ -80,12 +65,8 @@ async function init() {
   ).join('\n');
   userProtectedTermsInput.value = dedupeTerms(stored[USER_PROTECTED_TERMS_STORAGE_KEY]).join('\n');
   autoCacheCleanupEnabledInput.checked = Boolean(stored[AUTO_CACHE_CLEANUP_STORAGE_KEY]);
-  renderDeepLLimitControls(deeplSettings);
   renderDeepLKeyStatus(deeplSettings);
   saveDeepLApiKeyButton.addEventListener('click', saveDeepLApiKey);
-  deeplQuotaModeInput.addEventListener('change', updateDeepLLimitControlState);
-  deeplDurationModeInput.addEventListener('change', updateDeepLLimitControlState);
-  deeplConcurrencyLimitInput.addEventListener('change', saveDeepLConcurrencyLimit);
   excludedTranslationHostsSearchInput.addEventListener('input', renderExcludedTranslationHostsSearch);
   excludedTranslationHostsInput.addEventListener('input', renderExcludedTranslationHostsSearch);
   saveExcludedTranslationHostsButton.addEventListener('click', saveExcludedTranslationHosts);
@@ -111,67 +92,15 @@ async function saveDeepLApiKey() {
     return;
   }
 
-  const payload = buildDeepLKeyStoragePayload(apiKey, {
-    quotaMode: deeplQuotaModeInput.value,
-    quotaLimitK: deeplQuotaLimitKInput.value,
-    durationMode: deeplDurationModeInput.value,
-    durationLimitDays: deeplDurationLimitDaysInput.value
-  });
-  const concurrency = normalizeDeepLConcurrencyLimit(deeplConcurrencyLimitInput.value);
-  payload[DEEPL_CONCURRENCY_LIMIT_STORAGE_KEY] = concurrency.mode === 'fixed'
-    ? String(concurrency.max)
-    : DEFAULT_DEEPL_CONCURRENCY_LIMIT;
+  const payload = buildDeepLKeyStoragePayload(apiKey);
   await chrome.storage.local.set(payload);
   deeplApiKeyInput.value = '';
-  renderDeepLLimitControls(payload);
   renderDeepLKeyStatus(payload);
   showSavedState('密钥已保存');
 }
 
 function renderDeepLKeyStatus(settings) {
   deeplKeyStatus.textContent = formatDeepLKeyStatusText(settings);
-}
-
-function renderDeepLLimitControls(settings) {
-  deeplQuotaModeInput.value = normalizeDeepLLimitMode(settings[DEEPL_QUOTA_MODE_STORAGE_KEY]);
-  deeplQuotaLimitKInput.value = normalizePositiveInteger(
-    settings[DEEPL_QUOTA_LIMIT_K_STORAGE_KEY],
-    DEFAULT_DEEPL_QUOTA_LIMIT_K
-  );
-  deeplDurationModeInput.value = normalizeDeepLLimitMode(settings[DEEPL_DURATION_MODE_STORAGE_KEY]);
-  deeplDurationLimitDaysInput.value = normalizePositiveInteger(
-    settings[DEEPL_DURATION_LIMIT_DAYS_STORAGE_KEY],
-    DEFAULT_DEEPL_DURATION_LIMIT_DAYS
-  );
-  const concurrency = normalizeDeepLConcurrencyLimit(settings[DEEPL_CONCURRENCY_LIMIT_STORAGE_KEY]);
-  deeplConcurrencyLimitInput.value = concurrency.mode === 'fixed'
-    ? String(concurrency.max)
-    : DEFAULT_DEEPL_CONCURRENCY_LIMIT;
-  updateDeepLLimitControlState();
-}
-
-async function saveDeepLConcurrencyLimit() {
-  const concurrency = normalizeDeepLConcurrencyLimit(deeplConcurrencyLimitInput.value);
-  await chrome.storage.local.set({
-    [DEEPL_CONCURRENCY_LIMIT_STORAGE_KEY]: concurrency.mode === 'fixed'
-      ? String(concurrency.max)
-      : DEFAULT_DEEPL_CONCURRENCY_LIMIT
-  });
-  showSavedState('网络并发已保存');
-}
-
-function updateDeepLLimitControlState() {
-  deeplQuotaLimitKInput.disabled = deeplQuotaModeInput.value === DEEPL_LIMIT_MODE.INFINITE;
-  deeplDurationLimitDaysInput.disabled = deeplDurationModeInput.value === DEEPL_LIMIT_MODE.INFINITE;
-}
-
-function normalizeDeepLLimitMode(value) {
-  return value === DEEPL_LIMIT_MODE.INFINITE ? DEEPL_LIMIT_MODE.INFINITE : DEEPL_LIMIT_MODE.CUSTOM;
-}
-
-function normalizePositiveInteger(value, fallback) {
-  const number = Number.parseInt(value, 10);
-  return Number.isFinite(number) && number > 0 ? number : fallback;
 }
 
 async function saveExcludedTranslationHosts() {

@@ -1,6 +1,6 @@
 # Chrome Translator
 
-版本 0.1.0 · Manifest V3 Chrome 扩展 · DeepL API
+版本 0.1.7 · Manifest V3 Chrome 扩展 · Google 翻译 + DeepL 润色
 
 ## 功能
 
@@ -8,7 +8,7 @@
 - YouTube 字幕翻译（`.ytp-caption-segment` + `captionTracks` 预取）
 - 保护词（默认词库 + 用户词库，占位符 masking）
 - 多级翻译缓存（页内内存 → session → 本地持久）
-- 域名排除、DeepL 密钥与额度/时长/网络并发
+- 域名排除、Google 在线翻译、DeepL 本地缓存润色密钥
 - Popup、Options、右键菜单
 
 ## 安装
@@ -21,18 +21,20 @@ npm run package
 ```
 
 3. 打开 `chrome://extensions` → 开启「开发者模式」
-4. 「加载已解压的扩展程序」→ 选择 `dist/package/ChromeTranslator/`（或仓库根目录进行开发）
+4. 「加载已解压的扩展程序」→ 选择 `dist/package/ChromeTranslator/`
 
-在 **Options** 中填写你自己的 DeepL API Key。密钥与翻译缓存保存在浏览器本地，不会写入本仓库。
+在线翻译使用 Google 接口，无需 API Key。若需对**已有本地持久缓存**条目核对润色，可在 **Options** 中填写 DeepL API Key（可选）。密钥与缓存保存在浏览器本地，不会写入本仓库。
 
 ## 文件结构
 
 ```
 manifest.json
 background.js
-content.js
+content.bundle.js
 content.css
 translator.js
+google-translate.js
+deepl-translate.js
 deepl-settings.js
 domain-settings.js
 language-options.js
@@ -47,20 +49,21 @@ youtube-subtitles.js
 popup.html / popup.js
 options.html / options.js
 icons/
-scripts/package-extension.mjs
 package.json
 ```
 
-打包输出：`dist/package/ChromeTranslator/`、`dist/ChromeTranslator-0.1.0.zip`
+打包输出：`dist/package/ChromeTranslator/`、`dist/ChromeTranslator-0.1.7.zip`
 
 ## 模块
 
 | 文件 | 职责 |
 | --- | --- |
-| `background.js` | 消息队列、缓存、DeepL 调度、右键菜单 |
-| `content.js` | 整页扫描翻译、YouTube 字幕叠加 |
-| `translator.js` | 缓存查找、DeepL 单条/批请求、并发控制 |
-| `deepl-settings.js` | API 密钥、额度、时长、并发、Free/Pro 端点 |
+| `background.js` | 消息队列、缓存、翻译调度、右键菜单 |
+| `content.js` | 整页扫描翻译、YouTube 字幕叠加（源码；运行时注入 `content.bundle.js`） |
+| `translator.js` | 缓存查找、Google 在线翻译、DeepL 润色写回 |
+| `google-translate.js` | `clients5.google.com/translate_a/t` 请求与解析 |
+| `deepl-translate.js` | DeepL 润色请求（仅配合本地持久缓存） |
+| `deepl-settings.js` | DeepL 润色 API 密钥 |
 | `domain-settings.js` | 排除域名 |
 | `language-options.js` | 目标语言 |
 | `protected-terms.js` | 保护词匹配、预编译 protector |
@@ -77,13 +80,13 @@ package.json
 
 `zh-CN`（默认）、`en`、`ja`、`ko`、`es`、`fr`、`de` — 见 `language-options.js`
 
-DeepL `target_lang` 映射见 `translator.js` → `DEEPL_TARGET_LANGUAGE_MAP`
+Google `tl` 映射见 `google-translate.js`；DeepL `target_lang` 见 `deepl-translate.js`
 
 ## Storage
 
 **sync**：`targetLanguage`、`webpageTranslationEnabled`、`youtubeSubtitleTranslationEnabled`、`excludedTranslationHosts`
 
-**local**：`deeplApiKey` 等（`deepl-settings.js`）、`deeplConcurrencyLimit`（`adaptive` / `1` / `2` / `3`）、`userProtectedTerms`、`localTranslationCache:<lang>`、`localTranslationCacheDirectory`、`sessionTranslationCache:<tabId>`、`autoCacheCleanupEnabled`
+**local**：`deeplApiKey`（仅润色）、`userProtectedTerms`、`localTranslationCache:<lang>`、`localTranslationCacheDirectory`、`sessionTranslationCache:<tabId>`、`autoCacheCleanupEnabled`
 
 ## 翻译 `source`
 
@@ -92,7 +95,7 @@ DeepL `target_lang` 映射见 `translator.js` → `DEEPL_TARGET_LANGUAGE_MAP`
 | `cache` | 缓存命中 |
 | `protected` | 全文保护词 |
 | `original` | 返回原文 |
-| `network` | DeepL 成功 |
+| `network` | Google 在线翻译成功（可能已 DeepL 润色写回缓存） |
 
 `protected`、`original` 不写入持久缓存。
 
@@ -102,7 +105,7 @@ DeepL `target_lang` 映射见 `translator.js` → `DEEPL_TARGET_LANGUAGE_MAP`
 | --- | --- |
 | `PROTECTED_TERMS_VERSION` | 4 |
 | 翻译任务并发 | 10 |
-| DeepL HTTP 并发 | 1–3（Options 可选；自适应失败降 1；额度将尽降 1） |
+| Google HTTP 并发 | 1–3（自适应，失败降至 1） |
 | 批处理上限 | 20 条 / 4000 字符 |
 | 整页空闲扫描 | 250 节点/批 |
 | YouTube 预取批 | 20 |
@@ -115,8 +118,8 @@ DeepL `target_lang` 映射见 `translator.js` → `DEEPL_TARGET_LANGUAGE_MAP`
 - 缓存命中跳过保护词正则
 - 保护词 `buildMergedTermsProtector` 预编译与缓存
 - 整页 DOM 扫描使用 `requestIdleCallback`
-- DeepL 批请求并行、in-flight 去重
-- Free 密钥 → `api-free.deepl.com`；Pro → `api.deepl.com`
+- Google 批请求并行、in-flight 去重
+- DeepL 仅对已有本地持久缓存条目润色
 
 ## 开发
 
@@ -124,4 +127,4 @@ DeepL `target_lang` 映射见 `translator.js` → `DEEPL_TARGET_LANGUAGE_MAP`
 npm run package
 ```
 
-维护说明见仓库内 `DEVELOPMENT.md`（含本地协作流程，不上传到 README 的维护检查项请仅在该文件中查看）。
+维护者与协作流程见 `DEVELOPMENT.md`（其中的「每次改动后（必读）」仅出现在该文件，不会写入本 README）。
