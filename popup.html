@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Chrome Translator</title>
+    <style>
+      body {
+        width: 260px;
+        margin: 0;
+        padding: 16px;
+        background: #ffffff;
+        color: #111827;
+        font-family: Arial, "Helvetica Neue", sans-serif;
+      }
+
+      h1 {
+        margin: 0 0 14px;
+        font-size: 16px;
+        line-height: 1.25;
+      }
+
+      label {
+        display: block;
+        margin-bottom: 8px;
+        color: #374151;
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .setting {
+        margin-top: 14px;
+      }
+
+      .checkbox-label {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        margin-bottom: 0;
+        font-size: 13px;
+        font-weight: 600;
+        line-height: 1.35;
+      }
+
+      .checkbox-label input {
+        width: 16px;
+        height: 16px;
+        margin: 0;
+      }
+
+      .site-label {
+        display: block;
+        margin-top: 4px;
+        color: #6b7280;
+        font-size: 12px;
+        line-height: 1.35;
+        overflow-wrap: anywhere;
+      }
+
+      .button-row {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 6px;
+      }
+
+      select {
+        width: 100%;
+        min-height: 36px;
+        border: 1px solid #d1d5db;
+        border-radius: 6px;
+        background: #ffffff;
+        color: #111827;
+        font-size: 14px;
+      }
+
+      button {
+        width: 100%;
+        min-height: 34px;
+        border: 1px solid #d1d5db;
+        border-radius: 6px;
+        background: #f9fafb;
+        color: #111827;
+        cursor: pointer;
+        font-size: 13px;
+        font-weight: 700;
+      }
+
+      .button-row button {
+        min-height: 32px;
+        padding: 0 6px;
+        font-size: 12px;
+      }
+
+      #saveStatus {
+        min-height: 18px;
+        margin-top: 10px;
+        color: #047857;
+        font-size: 12px;
+      }
+
+      .key-status {
+        margin-top: 10px;
+        color: #4b5563;
+        font-size: 12px;
+        line-height: 1.4;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Chrome Translator</h1>
+    <div id="deeplKeyStatus" class="key-status" aria-live="polite"></div>
+    <label for="targetLanguage">目标语言</label>
+    <select id="targetLanguage"></select>
+    <div class="setting">
+      <label class="checkbox-label" for="youtubeSubtitleTranslationEnabled">
+        <input id="youtubeSubtitleTranslationEnabled" type="checkbox">
+        <span>翻译 YouTube 字幕</span>
+      </label>
+    </div>
+    <div class="setting">
+      <label class="checkbox-label" for="webpageTranslationEnabled">
+        <input id="webpageTranslationEnabled" type="checkbox">
+        <span>翻译整个页面</span>
+      </label>
+    </div>
+    <div class="setting">
+      <label class="checkbox-label" for="currentSiteTranslationExcluded">
+        <input id="currentSiteTranslationExcluded" type="checkbox">
+        <span>不翻译此网站</span>
+      </label>
+      <span id="currentSiteLabel" class="site-label"></span>
+    </div>
+    <div class="setting">
+      <button id="openOptions" type="button">设置</button>
+    </div>
+    <div class="setting button-row">
+      <button id="restoreOriginal" type="button">显示原文</button>
+      <button id="showTranslated" type="button">显示译文</button>
+      <button id="showBilingual" type="button">双语对照</button>
+    </div>
+    <div class="setting">
+      <button id="clearCurrentSiteCache" type="button">清空本站缓存</button>
+    </div>
+    <div class="setting">
+      <button id="retranslateCurrentPage" type="button">重新翻译当前页</button>
+    </div>
+    <div id="saveStatus" aria-live="polite"></div>
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

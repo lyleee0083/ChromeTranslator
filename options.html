@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Chrome Translator 设置</title>
+    <style>
+      body {
+        margin: 0;
+        background: #ffffff;
+        color: #111827;
+        font-family: Arial, "Helvetica Neue", sans-serif;
+      }
+
+      main {
+        box-sizing: border-box;
+        max-width: 720px;
+        padding: 28px;
+      }
+
+      h1 {
+        margin: 0 0 20px;
+        font-size: 20px;
+        line-height: 1.25;
+      }
+
+      label {
+        display: block;
+        margin-bottom: 8px;
+        color: #374151;
+        font-size: 13px;
+        font-weight: 700;
+      }
+
+      section {
+        margin-top: 24px;
+      }
+
+      input[type="password"],
+      input[type="number"],
+      select,
+      textarea {
+        box-sizing: border-box;
+        width: 100%;
+        border: 1px solid #d1d5db;
+        border-radius: 6px;
+        padding: 10px;
+        color: #111827;
+        font: 14px/1.45 Arial, "Helvetica Neue", sans-serif;
+      }
+
+      input[type="password"] {
+        min-height: 36px;
+      }
+
+      input[type="number"],
+      select {
+        min-height: 36px;
+      }
+
+      .limit-grid {
+        display: grid;
+        grid-template-columns: 160px minmax(0, 1fr);
+        gap: 10px;
+        align-items: end;
+        margin-top: 12px;
+      }
+
+      textarea {
+        min-height: 220px;
+        resize: vertical;
+      }
+
+      input[type="search"] {
+        box-sizing: border-box;
+        width: 100%;
+        min-height: 36px;
+        margin-bottom: 8px;
+        border: 1px solid #d1d5db;
+        border-radius: 6px;
+        padding: 0 10px;
+        color: #111827;
+        font: 14px Arial, "Helvetica Neue", sans-serif;
+      }
+
+      .search-result {
+        min-height: 18px;
+        margin: 0 0 10px;
+        color: #6b7280;
+        font-size: 12px;
+        line-height: 1.4;
+      }
+
+      .search-result.match {
+        color: #047857;
+      }
+
+      .search-result.miss {
+        color: #b91c1c;
+      }
+
+      button {
+        min-height: 36px;
+        margin-top: 12px;
+        border: 1px solid #d1d5db;
+        border-radius: 6px;
+        background: #f9fafb;
+        color: #111827;
+        cursor: pointer;
+        font-size: 13px;
+        font-weight: 700;
+        padding: 0 14px;
+      }
+
+      #saveStatus {
+        min-height: 18px;
+        margin-top: 10px;
+        color: #047857;
+        font-size: 12px;
+      }
+
+      .hint,
+      .status-line {
+        margin: 8px 0 0;
+        color: #4b5563;
+        font-size: 12px;
+        line-height: 1.5;
+      }
+
+      .checkbox-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: 10px 0 0;
+        color: #374151;
+        font-size: 13px;
+        font-weight: 700;
+      }
+
+      .checkbox-row input {
+        margin: 0;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Chrome Translator 设置</h1>
+      <section>
+        <h2>DeepL 密钥设置</h2>
+        <label for="deeplApiKey">DeepL API Key</label>
+        <input id="deeplApiKey" type="password" placeholder="请输入 DeepL API Key" autocomplete="off" spellcheck="false">
+        <div class="limit-grid">
+          <div>
+            <label for="deeplQuotaMode">翻译额度</label>
+            <select id="deeplQuotaMode">
+              <option value="custom">自定义</option>
+              <option value="infinite">∞</option>
+            </select>
+          </div>
+          <div>
+            <label for="deeplQuotaLimitK">额度（k）</label>
+            <input id="deeplQuotaLimitK" type="number" min="1" step="1" value="500">
+          </div>
+          <div>
+            <label for="deeplDurationMode">密钥时长</label>
+            <select id="deeplDurationMode">
+              <option value="custom">自定义</option>
+              <option value="infinite">∞</option>
+            </select>
+          </div>
+          <div>
+            <label for="deeplDurationLimitDays">时长（day）</label>
+            <input id="deeplDurationLimitDays" type="number" min="1" step="1" value="30">
+          </div>
+          <div>
+            <label for="deeplConcurrencyLimit">网络并发</label>
+            <select id="deeplConcurrencyLimit">
+              <option value="adaptive">自适应（推荐）</option>
+              <option value="1">1</option>
+              <option value="2">2</option>
+              <option value="3">3</option>
+            </select>
+          </div>
+        </div>
+        <p id="deeplKeyStatus" class="status-line" aria-live="polite"></p>
+        <p class="hint">请妥善保管你的 DeepL 密钥。密钥将保存在本地浏览器中。∞ 表示该项不限制。</p>
+        <p class="hint">网络并发：同时发送到 DeepL 的请求数。越高越快，但更容易触发限速；自适应会在失败时自动降并发。</p>
+        <button id="saveDeepLApiKey" type="button">保存密钥</button>
+      </section>
+      <section>
+        <label for="excludedTranslationHostsSearch">搜索域名</label>
+        <input id="excludedTranslationHostsSearch" type="search" placeholder="example.com 或 https://www.example.com/page" spellcheck="false">
+        <div id="excludedTranslationHostsSearchResult" class="search-result" aria-live="polite"></div>
+        <label for="excludedTranslationHosts">排除域名列表</label>
+        <textarea id="excludedTranslationHosts" spellcheck="false"></textarea>
+        <button id="saveExcludedTranslationHosts" type="button">保存</button>
+      </section>
+      <section>
+        <label for="protectedTermSearch">查询保护词</label>
+        <input id="protectedTermSearch" type="search" placeholder="输入要查询的单词或短语" spellcheck="false">
+        <div id="protectedTermSearchResult" class="search-result" aria-live="polite"></div>
+        <label for="userProtectedTerms">不翻译词库（每行一个）</label>
+        <textarea id="userProtectedTerms" spellcheck="false" placeholder="Tesla&#10;NVIDIA&#10;YouTube&#10;API"></textarea>
+        <button id="addProtectedTermFromSearch" type="button">添加查询词到自定义词库</button>
+        <button id="saveUserProtectedTerms" type="button">保存不翻译词库</button>
+        <button id="resetUserProtectedTerms" type="button">恢复默认词库</button>
+      </section>
+      <section>
+        <label>缓存统计</label>
+        <div id="cacheStats" class="status-line"></div>
+        <label class="checkbox-row">
+          <input id="autoCacheCleanupEnabled" type="checkbox">
+          <span>自动清理本地持久化缓存</span>
+        </label>
+        <p class="hint">关闭时不会自动按时间、容量或命中次数裁剪持久缓存，手动清理仍可使用。</p>
+        <button id="refreshCacheStats" type="button">刷新缓存统计</button>
+        <button id="clearAllCache" type="button">清空全部缓存</button>
+        <label for="clearLanguageCacheInput">清空指定语言缓存</label>
+        <input id="clearLanguageCacheInput" type="search" placeholder="例如 zh-CN" spellcheck="false">
+        <button id="clearLanguageCache" type="button">清空该语言缓存</button>
+        <label for="clearSiteCacheInput">清空指定站点缓存</label>
+        <input id="clearSiteCacheInput" type="search" placeholder="example.com 或 https://example.com/page" spellcheck="false">
+        <button id="clearSiteCache" type="button">清空该站点缓存</button>
+      </section>
+      <div id="saveStatus" aria-live="polite"></div>
+    </main>
+    <script type="module" src="options.js"></script>
+  </body>
+</html>

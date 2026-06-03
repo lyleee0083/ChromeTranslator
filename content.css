@@ -1,0 +1,21 @@
+#chrome-translator-youtube-subtitle {
+  position: absolute;
+  z-index: 60;
+  max-width: 92%;
+  transform: translateX(-50%);
+  padding: 8px 14px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.72);
+  color: #ffffff;
+  font-family: Arial, "Helvetica Neue", sans-serif;
+  font-size: clamp(16px, 2.4vw, 28px);
+  font-weight: 700;
+  line-height: 1.35;
+  text-align: center;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7);
+  pointer-events: none;
+}
+
+.chrome-translator-hide-youtube-caption {
+  opacity: 0 !important;
+}
